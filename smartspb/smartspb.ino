@@ -78,30 +78,76 @@ void setup() {
   phonePowerOff();
 
   previousMillis = millis();
+
+  addReading(takeReading());
+  addReading(Reading {ms(), 0, 205});
   
   popLogLevel();
   logln(F("setup()- End"));
-
-  delay(500);
 }
 
 void loop() {
-  // Check the scales
+  goToSleep();
+  performReading();
+  performSending();  
+}
 
+void goToSleep() {
+  waitForSerialBufferToEmpty();
   LowPower.powerDown(configuration.sleepTime, ADC_OFF, BOD_OFF);
 
   // Timer stops while we are asleep, so we need to keep track of it
-  cumulativeSleepMillis += 8000;
+  cumulativeSleepMillis += 8000;  
+}
 
+void performReading() {
+  if (isReadingTime()) {
+    struct Reading reading = takeReading();
+    if (readingChanged(reading)) {
+      addReading(reading);
+    }
+  }
+}
+
+void performSending() {
   if (isRemoteSendTime()) {
     sendRemote();
-    // Wait for things to finish
-    delay(500);
   }
+}
+
+boolean isReadingTime() {
+  return ms() - previousMillis > configuration.readingMillis;
 }
 
 boolean isRemoteSendTime() {
   return ms() - previousMillis > configuration.remoteSendMillis;
+}
+
+struct Reading takeReading() {
+  logln(F("takeReading()- Start"));
+  pushLogLevel();
+
+  // Read the scales and the temperature here
+  Reading reading = {ms(), 10, 210};
+  popLogLevel();
+  logln(F("takeReading()- End"));
+  return reading;
+}
+
+boolean readingChanged(struct Reading reading) {
+  if (readingsSize == 0) {
+    return true;
+  }
+  if (reading.grams != readings[readingsSize - 1].grams ||
+      reading.temperatureTenthsDegree != readings[readingsSize - 1].temperatureTenthsDegree) {
+    return true;
+  }
+  return false;
+}
+
+void addReading(struct Reading reading) {
+  readings[readingsSize++] = reading;
+  readingsSize = readingsSize % READING_BUFFER_SIZE;
 }
 
 boolean sendRemote() {
