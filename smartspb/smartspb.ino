@@ -1,7 +1,7 @@
+
 #include <EEPROMex.h>
 #include <EEPROMVar.h>
 #include "LowPower.h"
-
 #include <SoftwareSerial.h>
 
 // Pins
@@ -27,6 +27,17 @@
 #define REVISION ("Revision: ")
 #define IMEI ("IMEI: ")
 
+#define READING_BUFFER_SIZE (20)
+
+struct Configuration {
+  char remoteUrlBase[40];
+  char apiKey[36];
+  period_t sleepTime;
+  unsigned int readingMillis;
+  unsigned int remoteSendMillis;
+  unsigned int version;
+};
+
 struct PhoneConfig {
   String manufacturer;
   String model;
@@ -34,38 +45,46 @@ struct PhoneConfig {
   String imei;
 };
 
-struct Configuration {
-  char remoteUrlBase[40];
-  period_t sleepTime;
-  unsigned int remoteSendMillis;
+struct Reading {
+  unsigned long readingTimeMillis;
+  unsigned long grams;
+  int temperatureTenthsDegree;
 };
 
 SoftwareSerial phoneSerial(RX_PIN, TX_PIN);
 
 struct PhoneConfig phoneConfig = {"", "", "", ""};
-
 struct Configuration configuration;
+struct Reading readings[READING_BUFFER_SIZE];
+unsigned int readingsSize = 0;
 
 uint8_t indent = 0;
 unsigned long cumulativeSleepMillis = 0;
 unsigned long previousMillis;
+unsigned int serialBufferSize;
 
 void setup() {
   Serial.begin(115200);
+  serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
   pushLogLevel();
-  //strcpy(configuration.remoteUrlBase, "http://localhost:8080");
-  //configuration.remoteSendMillis = 60000;
-  //configuration.sleepTime = SLEEP_8S;
-  //EEPROM.writeBlock(0, configuration);
 
-  logln(F("Reading configuration"));
+  Serial.print("New readingsSize");
+  Serial.println(readingsSize);
+
+  /*
+  strcpy(configuration.remoteUrlBase, "http://localhost:8080");
+  strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
+  configuration.sleepTime = SLEEP_8S;
+  configuration.readingMillis = 0;
+  configuration.remoteSendMillis = 60000;
+  configuration.version = 1;
+  EEPROM.writeBlock(0, configuration);
+  */
+  
   EEPROM.readBlock(0, configuration);
 
-  log(F("remoteBaseURL: "));
-  logaddln(configuration.remoteUrlBase);
-  log(F("remoteSendMillis: "));
-  logaddln(configuration.remoteSendMillis);
+  logConfiguration();
 
   phoneSerial.begin(PHONE_BAUD);
   
@@ -289,7 +308,7 @@ String sendATCommand(char* command, unsigned int timeout, uint8_t bufferSize) {
   do {
     if (phoneSerial.available() != 0) {    
       response[bufferPointer++] = phoneSerial.read();
-      // check if the desired answer is in the response of the module
+      bufferPointer = bufferPointer % bufferSize;
       if (strstr(response, OK) != NULL) {
         return String(response);
       }
@@ -301,8 +320,33 @@ String sendATCommand(char* command, unsigned int timeout, uint8_t bufferSize) {
 
 void clearSerialBuffer() {
   while(phoneSerial.available() > 0) {
-    phoneSerial.read();    // Clean the input buffer
+    phoneSerial.read();
   }  
+}
+
+void logConfiguration() {
+  logln(F("logConfiguration()- Start"));
+  pushLogLevel();
+  log(F("SERIAL_TX_BUFFER_SIZE: "));
+  logaddln(SERIAL_TX_BUFFER_SIZE);
+  log(F("SERIAL_RX_BUFFER_SIZE: "));
+  logaddln(SERIAL_RX_BUFFER_SIZE);
+  
+  log(F("_SS_MAX_RX_BUFF: "));
+  logaddln(_SS_MAX_RX_BUFF);
+  
+  log(F("remoteBaseURL: "));
+  logaddln(configuration.remoteUrlBase);
+  log(F("apiKey: "));
+  logaddln(configuration.apiKey);
+  log(F("readingMillis: "));
+  logaddln(configuration.readingMillis);
+  log(F("remoteSendMillis: "));
+  logaddln(configuration.remoteSendMillis);
+  log(F("version: "));
+  logaddln(configuration.version);
+  popLogLevel();
+  logln(F("logConfiguration()- End"));
 }
 
 void logln(char* message) {
@@ -349,5 +393,11 @@ void indentLog() {
   for (int i = 0; i < indent; i++) {
     Serial.print(" ");
   }  
+}
+
+void waitForSerialBufferToEmpty() {
+  while (Serial.availableForWrite() < serialBufferSize) {
+    delay(20);
+  }
 }
 
