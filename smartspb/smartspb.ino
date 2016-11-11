@@ -1,16 +1,13 @@
 
 #include <EEPROMex.h>
 #include <EEPROMVar.h>
-#include "LowPower.h"
 #include <SoftwareSerial.h>
 
 // Pins
 #define PHONE_POWER_PIN (8)
 #define PHONE_RESET_PIN (9)
-#define RX_PIN (6)
-#define TX_PIN (7)
 
-#define PHONE_BAUD (19200)
+#define PHONE_BAUD (115200)
 
 #define END_OF_STRING ('\0')
 
@@ -37,22 +34,22 @@
 #define IMEI ("IMEI: ")
 
 #define READING_BUFFER_SIZE (20)
-#define MAX_HOST_LENGTH (60)
+#define MAX_HOST_LENGTH (61)
 
 #define HTTP_HOST ("Host: %s")
 #define HTTP_CONTENT_TYPE_JSON ("Content-Type: application/json")
 #define HTTP_CONTENT_LENGTH ("Content-Length: %d")
 #define HTTP_CACHE_CONTROL_NO_CACHE ("Cache-Control: no-cache")
+#define HTTP_ACCEPT ("Accept: */*")
+#define HTTP_API_KEY ("apiKey: %s")
 
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
-// #define HTTP_POST_READING ("POST /post HTTP/1.1")
 #define JSON_READING ("{\"grams\": %d, \"degreesC\": %d.%d}")
 
 struct Configuration {
   char remoteUrlBase[MAX_HOST_LENGTH];
-  char apiKey[36];
-  char apn[20];
-  period_t sleepTime;
+  char apiKey[37];
+  char apn[21];
   unsigned int readingMillis;
   unsigned int remoteSendMillis;
   unsigned int version;
@@ -62,7 +59,7 @@ struct PhoneConfig {
   //char manufacturer[20];
   //char model[20];
   //char revision[20];
-  char imei[15];
+  char imei[16];
 };
 
 struct Reading {
@@ -70,8 +67,6 @@ struct Reading {
   unsigned long grams;
   int temperatureTenthsDegree;
 };
-
-SoftwareSerial phoneSerial(RX_PIN, TX_PIN);
 
 struct PhoneConfig phoneConfig;
 struct Configuration configuration;
@@ -88,24 +83,24 @@ void setup() {
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
   pushLogLevel();
-/*
+
+
   //strcpy(configuration.remoteUrlBase, "http://122.107.211.41");
   //strcpy(configuration.remoteUrlBase, "http://httpbin.org");
   strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
   strcpy(configuration.apn, "telstra.wap");
-  configuration.sleepTime = SLEEP_8S;
   configuration.readingMillis = 0;
   configuration.remoteSendMillis = 60000;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
 
-*/
+
   EEPROM.readBlock(0, configuration);
 
   logConfiguration();
 
-  phoneSerial.begin(PHONE_BAUD);
+  Serial1.begin(PHONE_BAUD);
   
   phonePowerOn();
   
@@ -136,7 +131,7 @@ void loop() {
 
 void goToSleep() {
   waitForSerialBufferToEmpty();
-  LowPower.powerDown(configuration.sleepTime, ADC_OFF, BOD_OFF);
+  // LowPower.powerDown(configuration.sleepTime, ADC_OFF, BOD_OFF);
 
   // Timer stops while we are asleep, so we need to keep track of it
   cumulativeSleepMillis += 8000;  
@@ -203,58 +198,60 @@ boolean sendRemote() {
 
     sprintf(reading, JSON_READING, 505, 212 / 10, 212 % 10);
     
-    char host[MAX_HOST_LENGTH];
-    getHost(host);
-    //char host = 'httpbin.org';
-
+    char* host = "smartspb-infra.ap-southeast-2.elasticbeanstalk.com";
     sprintf(buffer, AT_HTTP, host);
     logln(buffer);
     
     sendATcommand(buffer, AT_HTTP_RESPONSE, 5000, 50);
     
-    sprintf(buffer, HTTP_POST_READING, phoneConfig.imei);
+    sprintf(buffer, HTTP_POST_READING, "IMEI12345678902");
     logln(buffer);
-    //sendLn(buffer);
+    sendLn(buffer);
 
     sprintf(buffer, HTTP_HOST, host);
     logln(buffer);
-    //sendLn(buffer);
+    sendLn(buffer);
 
     sprintf(buffer, HTTP_CONTENT_TYPE_JSON);
     logln(buffer);
-    //sendLn(buffer);
+    sendLn(buffer);
 
     sprintf(buffer, HTTP_CONTENT_LENGTH, strlen(reading));
     logln(buffer);
-    //sendLn(buffer);
+    sendLn(buffer);
 
     sprintf(buffer, HTTP_CACHE_CONTROL_NO_CACHE);
     logln(buffer);
-    //sendLn(buffer);
-    
+    sendLn(buffer);
+
+    sprintf(buffer, HTTP_ACCEPT);
+    logln(buffer);
+    sendLn(buffer);
+
+    sprintf(buffer, HTTP_API_KEY, configuration.apiKey);
+    logln(buffer);
+    sendLn(buffer);
+
     sprintf(buffer, "");
     logln(buffer);
-    //sendLn(buffer);
+    sendLn(buffer);
     
     logln(reading);
-    //sendLn(reading);
+    send(reading);
     
     buffer[0] = ESC;
     buffer[1] = END_OF_STRING;
     send(buffer);
-    /*
 
     logln(F("Waiting for something to appear"));
-    while(phoneSerial.available() == 0) {
+    logln(F("Reading the buffer"));
+
+    while(true) {
+      if (Serial1.available() != 0) {
+        Serial.print((char) Serial1.read());
+      }
       
     }
-    logln(F("Reading the buffer"));
-    delay(500);
-    while(phoneSerial.available() > 0) {
-      Serial.print((char) phoneSerial.read());
-      delay(10);
-    }
-    */
     phonePowerOff();
     previousMillis = ms();
     returnValue = true;
@@ -377,23 +374,18 @@ boolean sendATcommand(char* ATcommand, char* expectedAnswer, unsigned int timeou
 }
 
 boolean sendATCommandResponse(char* command, char* endText, unsigned int timeout, uint8_t bufferSize, char* response) {
-  Serial.println("1");
   memset(response, END_OF_STRING, bufferSize);
-  Serial.println("2");
   uint8_t bufferPointer=0;
   unsigned long startMillis;
-  Serial.println("3");
   
   clearSerialBuffer();
-  Serial.println("4");
 
   sendLn(command);
   startMillis = millis();
-  Serial.println("5");
 
   do {
-    if (phoneSerial.available() != 0) {    
-      response[bufferPointer++] = phoneSerial.read();
+    if (Serial1.available() != 0) {    
+      response[bufferPointer++] = Serial1.read();
       bufferPointer = bufferPointer % bufferSize;
       if (strstr(response, endText) != NULL) {
         return true;
@@ -406,20 +398,20 @@ boolean sendATCommandResponse(char* command, char* endText, unsigned int timeout
 }
 
 void send(char* text) {
-  phoneSerial.print(text);
+  Serial1.print(text);
 }
 
 void send(byte b) {
-  phoneSerial.print(b);
+  Serial1.print(b);
 }
 
 void sendLn(char* text) {
-  phoneSerial.println(text);
+  Serial1.println(text);
 }
 
 void clearSerialBuffer() {
-  while(phoneSerial.available() > 0) {
-    phoneSerial.read();
+  while(Serial1.available() > 0) {
+    Serial1.read();
   }  
 }
 

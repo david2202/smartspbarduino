@@ -82,6 +82,5 @@ Content-Length: 0
 
 <ctrl>Z
 
-
-<ctrl Z>
+{"grams": 505, "degreesC": 21.2}
 ~~~
