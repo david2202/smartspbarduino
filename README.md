@@ -72,8 +72,16 @@ AT+IPREX=19200
 
 
 ~~~
-AT + CREG? // Check that we are connected to the telephone network
-AT + CGSOCKCONT = 1, "IP", "internet" // Configure the connection type and APN
-AT + CSOCKAUTH = 1.1, "web" "web" // Set the authentication type and parameters
-AT + NETOPEN = "TCP", 60000 // Opens a socket
+AT+CREG? // Check that we are connected to the telephone network
+AT+CGSOCKCONT=1,"IP","telstra.wap" // Configure the connection type and APN
+AT+CSOCKAUTH=1,0 // Set the authentication to none
+AT+CHTTPACT="www.ebay.com.au",80
+GET http://www.ebay.com.au HTTP/1.1
+Host: www.ebay.com.au
+Content-Length: 0
+
+<ctrl>Z
+
+
+<ctrl Z>
 ~~~

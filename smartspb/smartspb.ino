@@ -16,9 +16,18 @@
 
 #define AT ("AT")
 #define AT_IDENTIFY ("ATI")
+#define AT_ECHO_OFF ("ATE0")
 #define AT_POWER_OFF ("AT+CPOF")
+#define AT_NETWORK_REGISTRATION ("AT+CREG?")
+#define AT_NETWORK_REGISTRATION_RESPONSE ("+CREG: 0,1")
+#define AT_DEFINE_SOCKET_PDP ("AT+CGSOCKCONT=1,\"IP\",\"%s\"")
+#define AT_DEFINE_PDP_AUTH ("AT+CSOCKAUTH=1,0")                   // No authentication
+#define AT_HTTP ("AT+CHTTPACT=\"%s\",80")
+#define AT_HTTP_RESPONSE ("+CHTTPACT: REQUEST")
+#define AT_HTTP_RESPONSE_COMPLETE ("+CHTTPACT: DATA,")
 
 #define OK ("OK")
+#define ESC (0x1A)
 #define CRLF ('\n')
 #define SPACE (" ")
 
@@ -28,10 +37,21 @@
 #define IMEI ("IMEI: ")
 
 #define READING_BUFFER_SIZE (20)
+#define MAX_HOST_LENGTH (60)
+
+#define HTTP_HOST ("Host: %s")
+#define HTTP_CONTENT_TYPE_JSON ("Content-Type: application/json")
+#define HTTP_CONTENT_LENGTH ("Content-Length: %d")
+#define HTTP_CACHE_CONTROL_NO_CACHE ("Cache-Control: no-cache")
+
+#define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
+// #define HTTP_POST_READING ("POST /post HTTP/1.1")
+#define JSON_READING ("{\"grams\": %d, \"degreesC\": %d.%d}")
 
 struct Configuration {
-  char remoteUrlBase[40];
+  char remoteUrlBase[MAX_HOST_LENGTH];
   char apiKey[36];
+  char apn[20];
   period_t sleepTime;
   unsigned int readingMillis;
   unsigned int remoteSendMillis;
@@ -39,10 +59,10 @@ struct Configuration {
 };
 
 struct PhoneConfig {
-  String manufacturer;
-  String model;
-  String revision;
-  String imei;
+  //char manufacturer[20];
+  //char model[20];
+  //char revision[20];
+  char imei[15];
 };
 
 struct Reading {
@@ -53,7 +73,7 @@ struct Reading {
 
 SoftwareSerial phoneSerial(RX_PIN, TX_PIN);
 
-struct PhoneConfig phoneConfig = {"", "", "", ""};
+struct PhoneConfig phoneConfig;
 struct Configuration configuration;
 struct Reading readings[READING_BUFFER_SIZE];
 unsigned int readingsSize = 0;
@@ -68,20 +88,19 @@ void setup() {
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
   pushLogLevel();
-
-  Serial.print("New readingsSize");
-  Serial.println(readingsSize);
-
-  /*
-  strcpy(configuration.remoteUrlBase, "http://localhost:8080");
+/*
+  //strcpy(configuration.remoteUrlBase, "http://122.107.211.41");
+  //strcpy(configuration.remoteUrlBase, "http://httpbin.org");
+  strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
+  strcpy(configuration.apn, "telstra.wap");
   configuration.sleepTime = SLEEP_8S;
   configuration.readingMillis = 0;
   configuration.remoteSendMillis = 60000;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
-  */
-  
+
+*/
   EEPROM.readBlock(0, configuration);
 
   logConfiguration();
@@ -90,7 +109,7 @@ void setup() {
   
   phonePowerOn();
   
-  PhoneConfig config = phoneConfiguration();
+  phoneConfiguration();
 
   // Send a message that we are online
 
@@ -100,12 +119,16 @@ void setup() {
 
   addReading(takeReading());
   addReading(Reading {ms(), 0, 205});
+
+  // Testing only
+  sendRemote();
   
   popLogLevel();
   logln(F("setup()- End"));
 }
 
 void loop() {
+  return;
   goToSleep();
   performReading();
   performSending();  
@@ -173,16 +196,71 @@ boolean sendRemote() {
   logln(F("sendRemote()- Start"));
   pushLogLevel();
   boolean returnValue;
-  if (phonePowerOn()) {
+  // if (phonePowerOn()) {
     // Send the data
-    log(F("Sending IMEI "));
-    logaddln(phoneConfig.imei);
+    char buffer[80];
+    char reading[50];
+
+    sprintf(reading, JSON_READING, 505, 212 / 10, 212 % 10);
+    
+    char host[MAX_HOST_LENGTH];
+    getHost(host);
+    //char host = 'httpbin.org';
+
+    sprintf(buffer, AT_HTTP, host);
+    logln(buffer);
+    
+    sendATcommand(buffer, AT_HTTP_RESPONSE, 5000, 50);
+    
+    sprintf(buffer, HTTP_POST_READING, phoneConfig.imei);
+    logln(buffer);
+    //sendLn(buffer);
+
+    sprintf(buffer, HTTP_HOST, host);
+    logln(buffer);
+    //sendLn(buffer);
+
+    sprintf(buffer, HTTP_CONTENT_TYPE_JSON);
+    logln(buffer);
+    //sendLn(buffer);
+
+    sprintf(buffer, HTTP_CONTENT_LENGTH, strlen(reading));
+    logln(buffer);
+    //sendLn(buffer);
+
+    sprintf(buffer, HTTP_CACHE_CONTROL_NO_CACHE);
+    logln(buffer);
+    //sendLn(buffer);
+    
+    sprintf(buffer, "");
+    logln(buffer);
+    //sendLn(buffer);
+    
+    logln(reading);
+    //sendLn(reading);
+    
+    buffer[0] = ESC;
+    buffer[1] = END_OF_STRING;
+    send(buffer);
+    /*
+
+    logln(F("Waiting for something to appear"));
+    while(phoneSerial.available() == 0) {
+      
+    }
+    logln(F("Reading the buffer"));
+    delay(500);
+    while(phoneSerial.available() > 0) {
+      Serial.print((char) phoneSerial.read());
+      delay(10);
+    }
+    */
     phonePowerOff();
     previousMillis = ms();
     returnValue = true;
-  } else {
-    returnValue = false;
-  }
+  //} else {
+  //  returnValue = false;
+  //}
   popLogLevel();
   logln(F("sendRemote()- End"));
   return returnValue;
@@ -209,12 +287,37 @@ boolean phonePowerOn() {
     }
   }  
   logln(F("Phone module is powered on"));
+
+  char response[30];
+  logln(F("Turning echo off"));
+  sendATCommandResponse(AT_ECHO_OFF, OK, 200, 30, response);
+  
+  do {
+    logln(F("Waiting for network"));
+    delay(1000);
+    logln(AT_NETWORK_REGISTRATION);
+    sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
+    logln(response);
+  } while (strstr(response, AT_NETWORK_REGISTRATION_RESPONSE) == NULL);
+
+  char buffer[30];
+  sprintf(buffer, AT_DEFINE_SOCKET_PDP, configuration.apn);
+  logln(F("Defining socket PDP context"));
+  logln(buffer);
+  sendATCommandResponse(buffer, OK, 2000, 30, response);
+  logln(response);
+  
+  logln(F("Setting PDP auth mode to none"));
+  sendATCommandResponse(AT_DEFINE_PDP_AUTH, OK, 2000, 30, response);
+  logln(response);
+  
   popLogLevel();
   logln(F("phonePowerOn() - End"));
   return true;
 }
 
 boolean phonePowerOff() {
+  return true;
   logln(F("phonePowerOff() - Start"));
   pushLogLevel();
   boolean result = sendATcommand(AT_POWER_OFF, OK, 2000, 20);
@@ -223,99 +326,95 @@ boolean phonePowerOff() {
   return result;
 }
 
-struct PhoneConfig phoneConfiguration() {
+void phoneConfiguration() {
   logln(F("phoneConfiguration() - Start"));
   pushLogLevel();
 
   logln(F("Getting phone configuration"));
-  String config = sendATCommand(AT_IDENTIFY, 200, 250);
-  if (config.length() == 0) {
+  unsigned int bufferSize = 250;
+  char response[bufferSize];
+  sendATCommandResponse(AT_IDENTIFY, OK, 200, bufferSize, response);
+  if (strlen(response) == 0) {
     logln(F("Timed out"));
   } else {
-    phoneConfig.manufacturer = extractConfigItem(config, MANUFACTURER);
-    phoneConfig.model = extractConfigItem(config, MODEL);
-    phoneConfig.revision = extractConfigItem(config, REVISION);
-    phoneConfig.imei = extractConfigItem(config, IMEI);
+    //extractConfigItem(response, MANUFACTURER, phoneConfig.manufacturer);
+    //extractConfigItem(response, MODEL, phoneConfig.model);
+    //extractConfigItem(response, REVISION, phoneConfig.revision);
+    extractConfigItem(response, IMEI, phoneConfig.imei);
 
-    logln(MANUFACTURER + phoneConfig.manufacturer);
-    logln(MODEL + phoneConfig.model);
-    logln(REVISION + phoneConfig.revision);
-    logln(IMEI + phoneConfig.imei);
+    //log(MANUFACTURER);
+    //logaddln(phoneConfig.manufacturer);
+    //log(MODEL);
+    //logaddln(phoneConfig.model);
+    //log(REVISION);
+    //logaddln(phoneConfig.revision);
+    log(IMEI);
+    logaddln(phoneConfig.imei);
   }
   
   popLogLevel();
   logln(F("phoneConfiguration() - End"));
-  return phoneConfig;
 }
 
-String extractConfigItem(String config, char* parameter) {
+boolean extractConfigItem(char* response, char* parameter, char* answer) {
+  String config = String(response);
   int parameterPos = config.indexOf(parameter);
   int startPos = parameterPos + strlen(parameter);
   int newLinePos = config.indexOf(CRLF, startPos + 1);
-  String parameterValue = config.substring(startPos, newLinePos - 1);
-
-  return parameterValue;
+  logln(config.substring(startPos, newLinePos - 1));
+  config.substring(startPos, newLinePos - 1).toCharArray(answer, 20);
+  return true;
 }
 
-boolean sendATcommand(char* ATcommand, char* expected_answer1, unsigned int timeout, uint8_t bufferSize) {
-  String response = sendATCommand(ATcommand, timeout, bufferSize);
-  if (response.length() == 0) {
+boolean sendATcommand(char* ATcommand, char* expectedAnswer, unsigned int timeout, uint8_t bufferSize) {
+  char response[bufferSize];
+  sendATCommandResponse(ATcommand, expectedAnswer, timeout, bufferSize, response);
+  if (strlen(response) == 0) {
     return false;
   } else {
     return true;
   }
-  /*
-  uint8_t x = 0;
-  char response[100];
-  unsigned long startMillis;
-
-  memset(response, END_OF_STRING, 100);
-
-  delay(100);
-
-  clearSerialBuffer();
-  
-  phoneSerial.println(ATcommand);
-
-  x = 0;
-  startMillis = millis();
-
-  do {
-    if (phoneSerial.available() != 0) {    
-      response[x++] = phoneSerial.read();
-      // check if the desired answer is in the response of the module
-      if (strstr(response, expected_answer1) != NULL) {
-        return true;
-      }
-    }
-  } while((millis() - startMillis) < timeout);    
-  return false;
-  */
 }
 
-String sendATCommand(char* command, unsigned int timeout, uint8_t bufferSize) {
-  char response[bufferSize];
+boolean sendATCommandResponse(char* command, char* endText, unsigned int timeout, uint8_t bufferSize, char* response) {
+  Serial.println("1");
   memset(response, END_OF_STRING, bufferSize);
+  Serial.println("2");
   uint8_t bufferPointer=0;
   unsigned long startMillis;
+  Serial.println("3");
   
   clearSerialBuffer();
+  Serial.println("4");
 
-  phoneSerial.println(command);
-
+  sendLn(command);
   startMillis = millis();
+  Serial.println("5");
 
   do {
     if (phoneSerial.available() != 0) {    
       response[bufferPointer++] = phoneSerial.read();
       bufferPointer = bufferPointer % bufferSize;
-      if (strstr(response, OK) != NULL) {
-        return String(response);
+      if (strstr(response, endText) != NULL) {
+        return true;
       }
     }
-  } while((millis() - startMillis) < timeout);    
+  } while((millis() - startMillis) < timeout);
   response[0] = END_OF_STRING;
-  return String(response);
+  
+  return false;
+}
+
+void send(char* text) {
+  phoneSerial.print(text);
+}
+
+void send(byte b) {
+  phoneSerial.print(b);
+}
+
+void sendLn(char* text) {
+  phoneSerial.println(text);
 }
 
 void clearSerialBuffer() {
@@ -364,6 +463,11 @@ void logln(const __FlashStringHelper* message) {
   Serial.println(message);
 }
 
+void log(char* message) {
+  indentLog();
+  Serial.print(message);
+}
+
 void log(const __FlashStringHelper* message) {
   indentLog();
   Serial.print(message);
@@ -399,5 +503,13 @@ void waitForSerialBufferToEmpty() {
   while (Serial.availableForWrite() < serialBufferSize) {
     delay(20);
   }
+}
+
+char* getHost(char* host) {
+  String s = String(configuration.remoteUrlBase);
+  int start = s.indexOf("//") + 2;
+  String h = s.substring(start, s.length());
+  h.toCharArray(host, MAX_HOST_LENGTH);
+  return host;
 }
 
