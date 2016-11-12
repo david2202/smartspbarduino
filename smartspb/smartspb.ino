@@ -86,17 +86,17 @@ void setup() {
   logln(F("setup()- Start"));
   pushLogLevel();
 
-/*
+
   //strcpy(configuration.remoteUrlBase, "http://122.107.211.41");
   //strcpy(configuration.remoteUrlBase, "http://httpbin.org");
   strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
-  strcpy(configuration.apn, "telstra.wap");
+  strcpy(configuration.apn, "telstra.internet");
   configuration.readingMillis = 0;
   configuration.remoteSendMillis = 60000;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
-*/
+
 
   EEPROM.readBlock(0, configuration);
 
