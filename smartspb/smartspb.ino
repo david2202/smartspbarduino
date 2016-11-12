@@ -39,7 +39,6 @@
 
 #define HTTP_HOST ("Host: %s")
 #define HTTP_CONTENT_TYPE_JSON ("Content-Type: application/json")
-#define HTTP_CONTENT_LENGTH ("Content-Length: %d")
 #define HTTP_TRANSFER_ENCODING ("Transfer-Encoding: chunked")
 
 #define HTTP_CACHE_CONTROL_NO_CACHE ("Cache-Control: no-cache")
@@ -197,9 +196,6 @@ boolean sendRemote() {
   // if (phonePowerOn()) {
     // Send the data
     char buffer[80];
-    char reading[50];
-
-    sprintf(reading, JSON_READING, 505, 212 / 10, 212 % 10);
     
     char* host = "smartspb-infra.ap-southeast-2.elasticbeanstalk.com";
     sprintf(buffer, AT_HTTP, host);
@@ -219,12 +215,9 @@ boolean sendRemote() {
     logln(buffer);
     sendLn(buffer);
 
-    sprintf(buffer, HTTP_CONTENT_LENGTH, strlen(reading));
+    sprintf(buffer, HTTP_TRANSFER_ENCODING);
     logln(buffer);
     sendLn(buffer);
-    //sprintf(buffer, HTTP_TRANSFER_ENCODING);
-    //logln(buffer);
-    //sendLn(buffer);
 
     sprintf(buffer, HTTP_CACHE_CONTROL_NO_CACHE);
     logln(buffer);
@@ -241,11 +234,32 @@ boolean sendRemote() {
     sprintf(buffer, "");
     logln(buffer);
     sendLn(buffer);
+
+    // Use chunked encoding so we don't have to know content length
+    logln("1");
+    sendln("1");
+    logln("[");
+    sendln("[");
     
-    ///logln(reading);
-    ///String hexLength = String(strlen(reading), HEX);
-    ///sendLn(hexLength);
-    send(reading);
+    char reading[50];
+    sprintf(reading, JSON_READING, 505, 212 / 10, 212 % 10);
+
+    String hexLength = String(strlen(reading), HEX);
+    logln(hexLength);
+    sendln(hexLength);
+    
+    logln(reading);
+    sendLn(reading);
+
+    logln("1");
+    sendln("1");
+    logln("]");
+    sendln("]");
+
+    logln("0");
+    sendLn("0");
+    logln("");
+    sendln("");
     
     buffer[0] = ESC;
     buffer[1] = END_OF_STRING;
@@ -428,6 +442,10 @@ void send(byte b) {
 }
 
 void sendLn(char* text) {
+  Serial1.println(text);
+}
+
+void sendln(String text) {
   Serial1.println(text);
 }
 
