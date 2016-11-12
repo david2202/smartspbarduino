@@ -21,7 +21,8 @@
 #define AT_DEFINE_PDP_AUTH ("AT+CSOCKAUTH=1,0")                   // No authentication
 #define AT_HTTP ("AT+CHTTPACT=\"%s\",80")
 #define AT_HTTP_RESPONSE ("+CHTTPACT: REQUEST")
-#define AT_HTTP_RESPONSE_COMPLETE ("+CHTTPACT: DATA,")
+#define AT_HTTP_RESPONSE_INCOMPLETE ("+CHTTPACT: DATA,")
+#define AT_HTTP_RESPONSE_COMPLETE ("+CHTTPACT: 0")
 
 #define OK ("OK")
 #define ESC (0x1A)
@@ -39,6 +40,8 @@
 #define HTTP_HOST ("Host: %s")
 #define HTTP_CONTENT_TYPE_JSON ("Content-Type: application/json")
 #define HTTP_CONTENT_LENGTH ("Content-Length: %d")
+#define HTTP_TRANSFER_ENCODING ("Transfer-Encoding: chunked")
+
 #define HTTP_CACHE_CONTROL_NO_CACHE ("Cache-Control: no-cache")
 #define HTTP_ACCEPT ("Accept: */*")
 #define HTTP_API_KEY ("apiKey: %s")
@@ -84,7 +87,7 @@ void setup() {
   logln(F("setup()- Start"));
   pushLogLevel();
 
-
+/*
   //strcpy(configuration.remoteUrlBase, "http://122.107.211.41");
   //strcpy(configuration.remoteUrlBase, "http://httpbin.org");
   strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
@@ -94,7 +97,7 @@ void setup() {
   configuration.remoteSendMillis = 60000;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
-
+*/
 
   EEPROM.readBlock(0, configuration);
 
@@ -204,7 +207,7 @@ boolean sendRemote() {
     
     sendATcommand(buffer, AT_HTTP_RESPONSE, 5000, 50);
     
-    sprintf(buffer, HTTP_POST_READING, "IMEI12345678902");
+    sprintf(buffer, HTTP_POST_READING, phoneConfig.imei);
     logln(buffer);
     sendLn(buffer);
 
@@ -219,6 +222,9 @@ boolean sendRemote() {
     sprintf(buffer, HTTP_CONTENT_LENGTH, strlen(reading));
     logln(buffer);
     sendLn(buffer);
+    //sprintf(buffer, HTTP_TRANSFER_ENCODING);
+    //logln(buffer);
+    //sendLn(buffer);
 
     sprintf(buffer, HTTP_CACHE_CONTROL_NO_CACHE);
     logln(buffer);
@@ -236,7 +242,9 @@ boolean sendRemote() {
     logln(buffer);
     sendLn(buffer);
     
-    logln(reading);
+    ///logln(reading);
+    ///String hexLength = String(strlen(reading), HEX);
+    ///sendLn(hexLength);
     send(reading);
     
     buffer[0] = ESC;
@@ -244,14 +252,28 @@ boolean sendRemote() {
     send(buffer);
 
     logln(F("Waiting for something to appear"));
-    logln(F("Reading the buffer"));
 
-    while(true) {
-      if (Serial1.available() != 0) {
-        Serial.print((char) Serial1.read());
+    char response[1024];
+    unsigned int responsePointer = 0;
+    memcpy(response, END_OF_STRING, 1024);
+    
+    boolean done = false;
+    while (!done) {
+      if (Serial1.available() > 0) {
+        response[responsePointer++] = (char) Serial1.read();
+        // Serial.print(response[responsePointer-1]);
+        if (strstr(response, AT_HTTP_RESPONSE_COMPLETE) != NULL) {
+          done = true;
+        }
       }
-      
     }
+    String responseString = String(response);
+    int startPos = responseString.indexOf("{");
+    int endPos = responseString.indexOf("}") + 1;
+
+    String payload = responseString.substring(startPos, endPos);
+
+    Serial.println(payload);
     phonePowerOff();
     previousMillis = ms();
     returnValue = true;
