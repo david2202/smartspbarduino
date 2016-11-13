@@ -1,9 +1,13 @@
 
 #include <EEPROMex.h>
 #include <EEPROMVar.h>
-#include <SoftwareSerial.h>
+#include "HX711.h"
 
 // Pins
+#define HX711_DOUT  2
+#define HX711_CLK  3
+#define HX711_AVERAGE_NUMBER 20
+
 #define PHONE_POWER_PIN (8)
 #define PHONE_RESET_PIN (9)
 
@@ -46,7 +50,11 @@
 #define HTTP_API_KEY ("apiKey: %s")
 
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
-#define JSON_READING ("{\"grams\": %d, \"degreesC\": %d.%d}")
+#define JSON_READING ("{\"grams\": %ld, \"degreesC\": %d.%d}")
+
+#define SCALE_TOLERANCE (6)
+
+HX711 scale(HX711_DOUT, HX711_CLK);   // parameter "gain" is ommited; the default value 128 is used by the library
 
 struct Configuration {
   char remoteUrlBase[MAX_HOST_LENGTH];
@@ -65,10 +73,14 @@ struct PhoneConfig {
 };
 
 struct Reading {
-  unsigned long readingTimeMillis;
-  unsigned long grams;
+  long readingTimeMillis;
+  long grams;
   int temperatureTenthsDegree;
 };
+
+long scaleZeroReading;
+boolean firstReading = true;
+long scaleGramsFactor = 231243l;
 
 struct PhoneConfig phoneConfig;
 struct Configuration configuration;
@@ -77,7 +89,8 @@ unsigned int readingsSize = 0;
 
 uint8_t indent = 0;
 unsigned long cumulativeSleepMillis = 0;
-unsigned long previousMillis;
+unsigned long previousScaleMillis;
+unsigned long previousSendMillis;
 unsigned int serialBufferSize;
 
 void setup() {
@@ -86,17 +99,17 @@ void setup() {
   logln(F("setup()- Start"));
   pushLogLevel();
 
-
+/*
   //strcpy(configuration.remoteUrlBase, "http://122.107.211.41");
   //strcpy(configuration.remoteUrlBase, "http://httpbin.org");
   strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
   strcpy(configuration.apn, "telstra.internet");
-  configuration.readingMillis = 0;
+  configuration.readingMillis = 8000;
   configuration.remoteSendMillis = 60000;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
-
+*/
 
   EEPROM.readBlock(0, configuration);
 
@@ -112,62 +125,72 @@ void setup() {
 
   phonePowerOff();
 
-  previousMillis = millis();
-
-  addReading(takeReading());
-  addReading(Reading {ms(), 0, 205});
-
+  previousSendMillis = ms();
+  previousScaleMillis = ms();
   // Testing only
-  sendRemote();
+  // sendRemote();
   
   popLogLevel();
   logln(F("setup()- End"));
 }
 
 void loop() {
-  return;
+  if (firstReading) {
+    scaleZeroReading = readScale();
+    firstReading = false;
+  }
   goToSleep();
   performReading();
   performSending();  
 }
 
+long readScale() {
+  return scale.read_average(HX711_AVERAGE_NUMBER);
+}
 void goToSleep() {
   waitForSerialBufferToEmpty();
   // LowPower.powerDown(configuration.sleepTime, ADC_OFF, BOD_OFF);
 
   // Timer stops while we are asleep, so we need to keep track of it
-  cumulativeSleepMillis += 8000;  
+  // cumulativeSleepMillis += 8000;  
 }
 
 void performReading() {
   if (isReadingTime()) {
-    struct Reading reading = takeReading();
-    if (readingChanged(reading)) {
-      addReading(reading);
-    }
+    takeReading();
   }
 }
 
 void performSending() {
   if (isRemoteSendTime()) {
     sendRemote();
+    previousSendMillis = ms();
   }
 }
 
 boolean isReadingTime() {
-  return ms() - previousMillis > configuration.readingMillis;
+  return ms() - previousScaleMillis > configuration.readingMillis;
 }
 
 boolean isRemoteSendTime() {
-  return ms() - previousMillis > configuration.remoteSendMillis;
+  return ms() - previousSendMillis > configuration.remoteSendMillis;
 }
 
-struct Reading takeReading() {
+void takeReading() {
   logln(F("takeReading()- Start"));
   pushLogLevel();
 
-  // Read the scales and the temperature here
-  Reading reading = {ms(), 10, 210};
+  long scaleReading = readScale();
+  int grams = ((scaleReading - scaleZeroReading) * 10000l) / scaleGramsFactor;
+  log(F("grams = "));
+  logln(grams);
+  // Temperature dummy at the moment
+  Reading reading = {ms(), grams, 210};
+  if (readingChanged(reading)) {
+    logln(F("Reading has changed - adding new reading"));
+    addReading(reading);
+  }
+  previousScaleMillis = ms();
   popLogLevel();
   logln(F("takeReading()- End"));
   return reading;
@@ -177,8 +200,7 @@ boolean readingChanged(struct Reading reading) {
   if (readingsSize == 0) {
     return true;
   }
-  if (reading.grams != readings[readingsSize - 1].grams ||
-      reading.temperatureTenthsDegree != readings[readingsSize - 1].temperatureTenthsDegree) {
+  if (abs(reading.grams - readings[readingsSize - 1].grams) > SCALE_TOLERANCE) {
     return true;
   }
   return false;
@@ -240,16 +262,24 @@ boolean sendRemote() {
     sendln("1");
     logln("[");
     sendln("[");
-    
-    char reading[50];
-    sprintf(reading, JSON_READING, 505, 212 / 10, 212 % 10);
 
-    String hexLength = String(strlen(reading), HEX);
-    logln(hexLength);
-    sendln(hexLength);
+    for (int i = 0; i < readingsSize; i++) {
+      // If there's more than one reading don't send the first reading as we've already sent it last time
+      if (i > 0 || readingsSize == 1) {
+        char reading[50];
+        sprintf(reading, JSON_READING, readings[i].grams, 21, 2);
     
-    logln(reading);
-    sendLn(reading);
+        if (i < readingsSize - 1) {
+          strcat(reading, ",");
+        }
+        String hexLength = String(strlen(reading), HEX);
+        logln(hexLength);
+        sendln(hexLength);
+        
+        logln(reading);
+        sendLn(reading);
+      }
+    }
 
     logln("1");
     sendln("1");
@@ -275,7 +305,7 @@ boolean sendRemote() {
     while (!done) {
       if (Serial1.available() > 0) {
         response[responsePointer++] = (char) Serial1.read();
-        // Serial.print(response[responsePointer-1]);
+        Serial.print(response[responsePointer-1]);
         if (strstr(response, AT_HTTP_RESPONSE_COMPLETE) != NULL) {
           done = true;
         }
@@ -289,7 +319,9 @@ boolean sendRemote() {
 
     Serial.println(payload);
     phonePowerOff();
-    previousMillis = ms();
+    previousSendMillis = ms();
+    readings[0] = readings[readingsSize - 1];
+    readingsSize = 1;
     returnValue = true;
   //} else {
   //  returnValue = false;
@@ -463,9 +495,6 @@ void logConfiguration() {
   log(F("SERIAL_RX_BUFFER_SIZE: "));
   logaddln(SERIAL_RX_BUFFER_SIZE);
   
-  log(F("_SS_MAX_RX_BUFF: "));
-  logaddln(_SS_MAX_RX_BUFF);
-  
   log(F("remoteBaseURL: "));
   logaddln(configuration.remoteUrlBase);
   log(F("apiKey: "));
@@ -486,6 +515,11 @@ void logln(char* message) {
 }
 
 void logln(String message) {
+  indentLog();
+  Serial.println(message);
+}
+
+void logln(int message) {
   indentLog();
   Serial.println(message);
 }
