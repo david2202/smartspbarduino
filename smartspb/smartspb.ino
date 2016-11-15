@@ -1,3 +1,4 @@
+#define SERIAL_RX_BUFFER_SIZE 256
 
 #include <EEPROMex.h>
 #include <EEPROMVar.h>
@@ -41,6 +42,7 @@
 #define READING_BUFFER_SIZE (20)
 #define MAX_HOST_LENGTH (61)
 
+#define HTTP_TIMEOUT (20000)
 #define HTTP_HOST ("Host: %s")
 #define HTTP_CONTENT_TYPE_JSON ("Content-Type: application/json")
 #define HTTP_TRANSFER_ENCODING ("Transfer-Encoding: chunked")
@@ -301,23 +303,40 @@ boolean sendRemote() {
     unsigned int responsePointer = 0;
     memcpy(response, END_OF_STRING, 1024);
     
+    unsigned long startTime = millis();
+    
     boolean done = false;
-    while (!done) {
+    boolean timeout = false;
+    while (!done && !timeout) {
       if (Serial1.available() > 0) {
         response[responsePointer++] = (char) Serial1.read();
-        Serial.print(response[responsePointer-1]);
+        if (responsePointer == 1024) {
+          timeout = true;
+          clearSerialBuffer();
+        }
+        // Serial.print(response[responsePointer-1]);
         if (strstr(response, AT_HTTP_RESPONSE_COMPLETE) != NULL) {
           done = true;
         }
       }
+      if (millis() - startTime > HTTP_TIMEOUT) {
+        timeout = true;
+      }
+
     }
-    String responseString = String(response);
-    int startPos = responseString.indexOf("{");
-    int endPos = responseString.indexOf("}") + 1;
+    Serial.println(response);
+    if (!timeout) {
+      String responseString = String(response);
+      int startPos = responseString.indexOf("{");
+      int endPos = responseString.indexOf("}") + 1;
 
-    String payload = responseString.substring(startPos, endPos);
+      String payload = responseString.substring(startPos, endPos);
 
-    Serial.println(payload);
+      Serial.println(payload);
+    } else {
+      logln("Timeout");
+      send(ESC);
+    }
     phonePowerOff();
     previousSendMillis = ms();
     readings[0] = readings[readingsSize - 1];
