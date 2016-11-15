@@ -52,7 +52,7 @@
 #define HTTP_API_KEY ("apiKey: %s")
 
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
-#define JSON_READING ("{\"grams\": %ld, \"degreesC\": %d.%d}")
+#define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"degreesC\":%d.%d}")
 
 #define SCALE_TOLERANCE (6)
 
@@ -77,6 +77,7 @@ struct PhoneConfig {
 struct Reading {
   long readingTimeMillis;
   long grams;
+  long totalGrams;
   int temperatureTenthsDegree;
 };
 
@@ -88,6 +89,7 @@ struct PhoneConfig phoneConfig;
 struct Configuration configuration;
 struct Reading readings[READING_BUFFER_SIZE];
 unsigned int readingsSize = 0;
+long previousGrams[3];
 
 uint8_t indent = 0;
 unsigned long cumulativeSleepMillis = 0;
@@ -138,7 +140,7 @@ void setup() {
 
 void loop() {
   if (firstReading) {
-    scaleZeroReading = readScale();
+    takeReading();
     firstReading = false;
   }
   goToSleep();
@@ -149,6 +151,7 @@ void loop() {
 long readScale() {
   return scale.read_average(HX711_AVERAGE_NUMBER);
 }
+
 void goToSleep() {
   waitForSerialBufferToEmpty();
   // LowPower.powerDown(configuration.sleepTime, ADC_OFF, BOD_OFF);
@@ -183,29 +186,87 @@ void takeReading() {
   pushLogLevel();
 
   long scaleReading = readScale();
-  int grams = ((scaleReading - scaleZeroReading) * 10000l) / scaleGramsFactor;
+  if (firstReading) {
+    scaleZeroReading = scaleReading;
+  }
+  long grams = ((scaleReading - scaleZeroReading) * 10000l) / scaleGramsFactor;
+  long newGrams;
+  
   log(F("grams = "));
-  logln(grams);
+  logaddln(grams);
   // Temperature dummy at the moment
-  Reading reading = {ms(), grams, 210};
-  if (readingChanged(reading)) {
-    logln(F("Reading has changed - adding new reading"));
+  if (readingChanged(grams, newGrams) || firstReading) {
+    log(F("Reading has changed - adding new reading grams="));
+    logaddln(newGrams);
+    // The new reading is the previous reading plus the new reading.
+    // This elminates slow drift in the scale as we only count changes.
+    long totalGrams;
+    if (readingsSize == 0) {
+      totalGrams = newGrams;
+    } else {
+      totalGrams = readings[readingsSize - 1].totalGrams + newGrams;
+    }
+    log(F("Reading has changed - adding new reading totalGrams="));
+    logaddln(totalGrams);
+    Reading reading = {ms(), newGrams, totalGrams, 210};
     addReading(reading);
   }
   previousScaleMillis = ms();
+  // Roll the history
+  previousGrams[2] = previousGrams[1];
+  previousGrams[1] = previousGrams[0];
+  previousGrams[0] = grams;
   popLogLevel();
   logln(F("takeReading()- End"));
-  return reading;
 }
 
-boolean readingChanged(struct Reading reading) {
+boolean readingChanged(long grams, long &newReading) {
+  logln(F("readingChanged()- Start"));
+  pushLogLevel();
+  log("previousGrams[0]=");
+  logaddln(previousGrams[0]);
+  log("previousGrams[1]=");
+  logaddln(previousGrams[1]);
+  log("previousGrams[2]=");
+  logaddln(previousGrams[2]);
+  boolean retVal = false;
+  
+  log("Checking the reading ");
+  logaddln(grams);
   if (readingsSize == 0) {
-    return true;
+    newReading = grams;
+    retVal = true;
+  } else if (abs(grams - previousGrams[0]) > SCALE_TOLERANCE) {
+    logln("Haven't got two stable readings");
+    // We need two stable readings in a row to count as an official reading
+    retVal = false;
+  } else if (abs(previousGrams[0] - previousGrams[1]) > SCALE_TOLERANCE &&
+      abs(previousGrams[1] - previousGrams[2]) > SCALE_TOLERANCE) {
+    // Big bounce
+    logln("Big bounce");
+    newReading = previousGrams[0] - previousGrams[2];
+    retVal = true;
+  } else if (abs(previousGrams[0] - previousGrams[1]) <= SCALE_TOLERANCE &&
+      abs(previousGrams[1] - previousGrams[2]) <= SCALE_TOLERANCE &&
+      abs(previousGrams[0] - previousGrams[2]) > SCALE_TOLERANCE) {
+    // Check for a small bounce
+    logln("Small bounce");
+    newReading = previousGrams[0] - previousGrams[2];
+    retVal = true;
+  } else if (abs(previousGrams[0] - previousGrams[1]) > SCALE_TOLERANCE) {
+    // Normal
+    newReading = previousGrams[0] - previousGrams[1];
+    log("Article detected weight = ");
+    logaddln(newReading);
+    Serial.println(newReading);
+    retVal = true;
+  } else {
+    log("Reading isn't greater than scale tolerance ");
+    logaddln(SCALE_TOLERANCE);
   }
-  if (abs(reading.grams - readings[readingsSize - 1].grams) > SCALE_TOLERANCE) {
-    return true;
-  }
-  return false;
+  popLogLevel();
+  logln(F("readingChanged()- End"));
+  return retVal;
 }
 
 void addReading(struct Reading reading) {
@@ -269,7 +330,7 @@ boolean sendRemote() {
       // If there's more than one reading don't send the first reading as we've already sent it last time
       if (i > 0 || readingsSize == 1) {
         char reading[50];
-        sprintf(reading, JSON_READING, readings[i].grams, 21, 2);
+        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, 21, 2);
     
         if (i < readingsSize - 1) {
           strcat(reading, ",");
@@ -538,7 +599,7 @@ void logln(String message) {
   Serial.println(message);
 }
 
-void logln(int message) {
+void logln(long message) {
   indentLog();
   Serial.println(message);
 }
@@ -566,7 +627,7 @@ void logaddln(String message) {
   Serial.println(message);
 }
 
-void logaddln(unsigned int message) {
+void logaddln(long message) {
   Serial.println(message);
 }
 
