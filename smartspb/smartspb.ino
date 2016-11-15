@@ -54,7 +54,7 @@
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
 #define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"degreesC\":%d.%d}")
 
-#define SCALE_TOLERANCE (6)
+#define SCALE_TOLERANCE (5)
 
 HX711 scale(HX711_DOUT, HX711_CLK);   // parameter "gain" is ommited; the default value 128 is used by the library
 
