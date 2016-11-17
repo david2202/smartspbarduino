@@ -8,7 +8,7 @@
 #define HX711_DOUT  2
 #define HX711_CLK  3
 #define HX711_AVERAGE_NUMBER 5
-#define HX711_READING_DELAY_MILLIS 100
+#define HX711_READING_DELAY_MILLIS 25
 #define HX711_NUMBER_OF_READINGS 4
 
 #define PHONE_POWER_PIN (8)
@@ -56,7 +56,7 @@
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
 #define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
 
-#define SCALE_TOLERANCE (6)
+#define SCALE_TOLERANCE (3)
 
 HX711 scale(HX711_DOUT, HX711_CLK);   // parameter "gain" is ommited; the default value 128 is used by the library
 
@@ -133,8 +133,6 @@ void setup() {
 
   previousSendMillis = ms();
   previousScaleMillis = ms();
-  // Testing only
-  // sendRemote();
   
   popLogLevel();
   logln(F("setup()- End"));
@@ -142,7 +140,7 @@ void setup() {
 
 void loop() {
   if (firstReading) {
-    takeReading();
+    // Let things settle
     firstReading = false;
   }
   goToSleep();
@@ -199,22 +197,44 @@ void takeReading() {
     scaleZeroReading = scaleReading;
   }
   long grams = ((scaleReading - scaleZeroReading) * 10000l) / scaleGramsFactor;
-  long newGrams;
+  long newGrams = 0;
   
   log(F("grams = "));
   logaddln(grams);
-  // Temperature dummy at the moment
-  if (previousGrams[0] - grams > previousGrams[0] * 0.5 && previousGrams[0] - grams > SCALE_TOLERANCE) {
+
+  // Check if we have a rogue reading that is higher or lower than the readings
+  // around it
+  if (abs(grams - previousGrams[1]) <= 2 
+    && abs(previousGrams[1] - ((grams + previousGrams[1]) / 2)) > 2) {
+      log(F("Rogue reading: grams="));
+      log(grams);
+      log(F(",previousGrams[0]="));
+      log(previousGrams[0]);
+      log(F(",previousGrams[1]="));
+      log(previousGrams[1]);
+      log(F(" Normalising to average of surrounding readings="));
+      previousGrams[0] = (grams + previousGrams[1]) / 2;
+      logln(previousGrams[1]);
+  }
+  
+  // Temperatures are dummy at the moment
+  
+  if (previousGrams[1] - grams > previousGrams[1] * 0.5 
+    && previousGrams[1] - previousGrams[0] > previousGrams[1] * 0.5
+    && previousGrams[1] - grams > SCALE_TOLERANCE
+    && previousGrams[1] - previousGrams[0] > SCALE_TOLERANCE) {
     logln("Zeroing scale");
     scaleZeroReading = 0;
     previousGrams[0]=0;
     previousGrams[1]=0;
     previousGrams[2]=0;
-    Reading reading = {ms(), 0, 0, 210};
-    addReading(reading);
+    if (readings[readingsSize-1].totalGrams != 0) {
+      Reading reading = {ms(), 0, 0, 210};
+      addReading(reading);
+    }
   } else if (readingChanged(grams, newGrams) || firstReading) {
     log(F("Reading has changed - adding new reading grams="));
-    logaddln(newGrams);
+    log(newGrams);
     // The new reading is the previous reading plus the new reading.
     // This elminates slow drift in the scale as we only count changes.
     long totalGrams;
@@ -223,16 +243,20 @@ void takeReading() {
     } else {
       totalGrams = readings[readingsSize - 1].totalGrams + newGrams;
     }
-    log(F("Reading has changed - adding new reading totalGrams="));
+    log(F(",totalGrams="));
     logaddln(totalGrams);
     Reading reading = {ms(), newGrams, totalGrams, 210};
     addReading(reading);
+    previousGrams[0]=grams;
+    previousGrams[1]=grams;
+    previousGrams[2]=grams;
+  } else {
+    // Roll the history
+    previousGrams[2] = previousGrams[1];
+    previousGrams[1] = previousGrams[0];
+    previousGrams[0] = grams;
   }
   previousScaleMillis = ms();
-  // Roll the history
-  previousGrams[2] = previousGrams[1];
-  previousGrams[1] = previousGrams[0];
-  previousGrams[0] = grams;
   popLogLevel();
   logln(F("takeReading()- End"));
 }
@@ -263,7 +287,7 @@ boolean readingChanged(long grams, long &newReading) {
       || previousGrams[0] - previousGrams[1] < 0 && previousGrams[1] - previousGrams[2] < 0)) {
     // Big bounce
     logln("Big bounce");
-    newReading = previousGrams[0] - previousGrams[2];
+    newReading = ((grams + previousGrams[0]) / 2) - previousGrams[2];
     retVal = true;
   } else if (abs(previousGrams[0] - previousGrams[1]) <= SCALE_TOLERANCE
       && abs(previousGrams[1] - previousGrams[2]) <= SCALE_TOLERANCE
@@ -271,13 +295,13 @@ boolean readingChanged(long grams, long &newReading) {
           && (previousGrams[0] - previousGrams[1] > 0 && previousGrams[1] - previousGrams[2] > 0
       || previousGrams[0] - previousGrams[1] < 0 && previousGrams[1] - previousGrams[2] < 0)) {
 
-    // Check for a small bounce
+    // Small bounce
     logln("Small bounce");
-    newReading = previousGrams[0] - previousGrams[2];
+    newReading = ((grams + previousGrams[0]) / 2) - previousGrams[2];
     retVal = true;
   } else if (abs(previousGrams[0] - previousGrams[1]) > SCALE_TOLERANCE) {
     // Normal
-    newReading = previousGrams[0] - previousGrams[1];
+    newReading = ((grams + previousGrams[0]) / 2) - previousGrams[1];
     log("Article detected weight = ");
     logaddln(newReading);
     retVal = true;
@@ -642,6 +666,11 @@ void log(char* message) {
 }
 
 void log(const __FlashStringHelper* message) {
+  indentLog();
+  Serial.print(message);
+}
+
+void log(long message) {
   indentLog();
   Serial.print(message);
 }
