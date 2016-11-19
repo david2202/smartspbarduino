@@ -56,7 +56,7 @@
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
 #define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
 
-#define SCALE_TOLERANCE (3)
+#define SCALE_TOLERANCE (4)
 
 HX711 scale(HX711_DOUT, HX711_CLK);   // parameter "gain" is ommited; the default value 128 is used by the library
 
@@ -64,8 +64,8 @@ struct Configuration {
   char remoteUrlBase[MAX_HOST_LENGTH];
   char apiKey[37];
   char apn[21];
-  unsigned int readingMillis;
-  unsigned int remoteSendMillis;
+  unsigned long readingMillis;
+  unsigned long remoteSendMillis;
   unsigned int version;
 };
 
@@ -112,7 +112,7 @@ void setup() {
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
   strcpy(configuration.apn, "telstra.internet");
   configuration.readingMillis = 8000;
-  configuration.remoteSendMillis = 60000;
+  configuration.remoteSendMillis = 300000;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
 */
@@ -124,10 +124,10 @@ void setup() {
   Serial1.begin(PHONE_BAUD);
   
   phonePowerOn();
-  
+
   phoneConfiguration();
 
-  // Send a message that we are online
+  // TODO Send a message that we are online
 
   phonePowerOff();
 
@@ -281,25 +281,23 @@ boolean readingChanged(long grams, long &newReading) {
     logln("Haven't got two stable readings");
     // We need two stable readings in a row to count as an official reading
     retVal = false;
-  } else if (abs(previousGrams[0] - previousGrams[1]) > SCALE_TOLERANCE
-    && abs(previousGrams[1] - previousGrams[2]) > SCALE_TOLERANCE
-    && (previousGrams[0] - previousGrams[1] > 0 && previousGrams[1] - previousGrams[2] > 0
-      || previousGrams[0] - previousGrams[1] < 0 && previousGrams[1] - previousGrams[2] < 0)) {
+  // Only accept positive readings
+  } else if (previousGrams[0] - previousGrams[1] > SCALE_TOLERANCE
+    && previousGrams[1] - previousGrams[2] > SCALE_TOLERANCE) {
     // Big bounce
     logln("Big bounce");
     newReading = ((grams + previousGrams[0]) / 2) - previousGrams[2];
     retVal = true;
-  } else if (abs(previousGrams[0] - previousGrams[1]) <= SCALE_TOLERANCE
-      && abs(previousGrams[1] - previousGrams[2]) <= SCALE_TOLERANCE
-      && abs(previousGrams[0] - previousGrams[2]) > SCALE_TOLERANCE
-          && (previousGrams[0] - previousGrams[1] > 0 && previousGrams[1] - previousGrams[2] > 0
-      || previousGrams[0] - previousGrams[1] < 0 && previousGrams[1] - previousGrams[2] < 0)) {
-
+  // Only accept positve readings
+  } else if (previousGrams[0] - previousGrams[1] <= SCALE_TOLERANCE
+      && previousGrams[1] - previousGrams[2] <= SCALE_TOLERANCE
+      && previousGrams[0] - previousGrams[2] > SCALE_TOLERANCE) {
     // Small bounce
     logln("Small bounce");
     newReading = ((grams + previousGrams[0]) / 2) - previousGrams[2];
     retVal = true;
-  } else if (abs(previousGrams[0] - previousGrams[1]) > SCALE_TOLERANCE) {
+  // Only accept positive readings
+  } else if (previousGrams[0] - previousGrams[1] > SCALE_TOLERANCE) {
     // Normal
     newReading = ((grams + previousGrams[0]) / 2) - previousGrams[1];
     log("Article detected weight = ");
@@ -323,7 +321,7 @@ boolean sendRemote() {
   logln(F("sendRemote()- Start"));
   pushLogLevel();
   boolean returnValue;
-  // if (phonePowerOn()) {
+  if (phonePowerOn()) {
     // Send the data
     char buffer[80];
     
@@ -454,9 +452,9 @@ boolean sendRemote() {
     readings[0] = readings[readingsSize - 1];
     readingsSize = 1;
     returnValue = true;
-  //} else {
-  //  returnValue = false;
-  //}
+  } else {
+    returnValue = false;
+  }
   popLogLevel();
   logln(F("sendRemote()- End"));
   return returnValue;
@@ -470,50 +468,77 @@ boolean phonePowerOn() {
   logln(F("phonePowerOn() - Start"));
   pushLogLevel();
   logln(F("Checking phone module power on status"));
-  if (!sendATcommand(AT, OK, 200, 10)) {
+  boolean poweredOn = false;
+  if (sendATcommand(AT, OK, 200, 10)) {
+    poweredOn = true;
+  } else {
     logln(F("Currently powered off - powering on"));
     digitalWrite(PHONE_POWER_PIN, HIGH);
     delay(200);
     digitalWrite(PHONE_POWER_PIN, LOW);
     logln(F("Waiting for power on"));
     delay(6000);
-    while (!sendATcommand(AT, OK, 2000, 10)) {
+    int i = 0;
+    while (!sendATcommand(AT, OK, 2000, 10) && i < 10) {
       logln(F("Checking phone module power on status"));
       delay(1000);
+      i++;
     }
-  }  
-  logln(F("Phone module is powered on"));
+    if (i == 10) {
+      logln(F("Phone is not responsive - hardware power off"));
+      phoneHardwarePowerOff();
+      logln(F("Waiting for power on"));
+      int j = 0;
+      while (!sendATcommand(AT, OK, 2000, 10) && j < 10) {
+        logln(F("Checking phone module power on status"));
+        delay(1000);
+        j++;
+      }
+      if (j == 10) {
+        poweredOn = false;
+        logln(F("Phone is not responsive - hardware power off and abandon"));
+        phoneHardwarePowerOff();
+      } else {
+        poweredOn = true;
+      }
+    } else {
+      poweredOn = true;
+    }
+  }
 
-  char response[30];
-  logln(F("Turning echo off"));
-  sendATCommandResponse(AT_ECHO_OFF, OK, 200, 30, response);
+  if (poweredOn) {
+    logln(F("Phone module is powered on"));
   
-  do {
-    logln(F("Waiting for network"));
-    delay(1000);
-    logln(AT_NETWORK_REGISTRATION);
-    sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
+    char response[30];
+    logln(F("Turning echo off"));
+    sendATCommandResponse(AT_ECHO_OFF, OK, 200, 30, response);
+    
+    do {
+      logln(F("Waiting for network"));
+      delay(1000);
+      logln(AT_NETWORK_REGISTRATION);
+      sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
+      logln(response);
+    } while (strstr(response, AT_NETWORK_REGISTRATION_RESPONSE) == NULL);
+  
+    char buffer[30];
+    sprintf(buffer, AT_DEFINE_SOCKET_PDP, configuration.apn);
+    logln(F("Defining socket PDP context"));
+    logln(buffer);
+    sendATCommandResponse(buffer, OK, 2000, 30, response);
     logln(response);
-  } while (strstr(response, AT_NETWORK_REGISTRATION_RESPONSE) == NULL);
-
-  char buffer[30];
-  sprintf(buffer, AT_DEFINE_SOCKET_PDP, configuration.apn);
-  logln(F("Defining socket PDP context"));
-  logln(buffer);
-  sendATCommandResponse(buffer, OK, 2000, 30, response);
-  logln(response);
-  
-  logln(F("Setting PDP auth mode to none"));
-  sendATCommandResponse(AT_DEFINE_PDP_AUTH, OK, 2000, 30, response);
-  logln(response);
+    
+    logln(F("Setting PDP auth mode to none"));
+    sendATCommandResponse(AT_DEFINE_PDP_AUTH, OK, 2000, 30, response);
+    logln(response);
+  }
   
   popLogLevel();
   logln(F("phonePowerOn() - End"));
-  return true;
+  return poweredOn;
 }
 
 boolean phonePowerOff() {
-  return true;
   logln(F("phonePowerOff() - Start"));
   pushLogLevel();
   boolean result = sendATcommand(AT_POWER_OFF, OK, 2000, 20);
@@ -522,6 +547,12 @@ boolean phonePowerOff() {
   return result;
 }
 
+void phoneHardwarePowerOff() {
+  digitalWrite(PHONE_POWER_PIN, HIGH);
+  delay(1000);
+  digitalWrite(PHONE_POWER_PIN, LOW);
+  delay(5000);
+}
 void phoneConfiguration() {
   logln(F("phoneConfiguration() - Start"));
   pushLogLevel();
