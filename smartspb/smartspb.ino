@@ -54,9 +54,9 @@
 #define HTTP_API_KEY ("apiKey: %s")
 
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
-#define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
+#define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"articleCount\":%d,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
 
-#define SCALE_TOLERANCE (4)
+#define SCALE_TOLERANCE (5)
 
 HX711 scale(HX711_DOUT, HX711_CLK);   // parameter "gain" is ommited; the default value 128 is used by the library
 
@@ -80,6 +80,7 @@ struct Reading {
   unsigned long timeMillis;
   long grams;
   long totalGrams;
+  int articleCount;
   int temperatureTenthsDegree;
 };
 
@@ -229,7 +230,7 @@ void takeReading() {
     previousGrams[1]=0;
     previousGrams[2]=0;
     if (readings[readingsSize-1].totalGrams != 0) {
-      Reading reading = {ms(), 0, 0, 210};
+      Reading reading = {ms(), 0, 0, 0, 210};
       addReading(reading);
     }
   } else if (readingChanged(grams, newGrams) || firstReading) {
@@ -238,14 +239,20 @@ void takeReading() {
     // The new reading is the previous reading plus the new reading.
     // This elminates slow drift in the scale as we only count changes.
     long totalGrams;
+    int articleCount;
     if (readingsSize == 0) {
       totalGrams = newGrams;
+      articleCount = 0;
     } else {
       totalGrams = readings[readingsSize - 1].totalGrams + newGrams;
+      articleCount = readings[readingsSize - 1].articleCount + 1;
     }
     log(F(",totalGrams="));
-    logaddln(totalGrams);
-    Reading reading = {ms(), newGrams, totalGrams, 210};
+    log(totalGrams);
+    log(F(",articleCount="));
+    logaddln(articleCount);
+    
+    Reading reading = {ms(), newGrams, totalGrams, articleCount, 210};
     addReading(reading);
     previousGrams[0]=grams;
     previousGrams[1]=grams;
@@ -289,9 +296,9 @@ boolean readingChanged(long grams, long &newReading) {
     newReading = ((grams + previousGrams[0]) / 2) - previousGrams[2];
     retVal = true;
   // Only accept positve readings
-  } else if (previousGrams[0] - previousGrams[1] <= SCALE_TOLERANCE
+  } else if (((grams + previousGrams[0]) / 2) - previousGrams[1] <= SCALE_TOLERANCE
       && previousGrams[1] - previousGrams[2] <= SCALE_TOLERANCE
-      && previousGrams[0] - previousGrams[2] > SCALE_TOLERANCE) {
+      && ((grams + previousGrams[0]) / 2) - previousGrams[2] > SCALE_TOLERANCE) {
     // Small bounce
     logln("Small bounce");
     newReading = ((grams + previousGrams[0]) / 2) - previousGrams[2];
@@ -379,7 +386,7 @@ boolean sendRemote() {
           // current time for the reading
           timeMillis = ms();
         }
-        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, 21, 2, (ms() - timeMillis) / 1000);
+        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, readings[i].articleCount, 21, 2, (ms() - timeMillis) / 1000);
     
         if (i < readingsSize - 1) {
           strcat(reading, ",");
@@ -487,6 +494,10 @@ boolean phonePowerOn() {
     if (i == 10) {
       logln(F("Phone is not responsive - hardware power off"));
       phoneHardwarePowerOff();
+      logln(F("Powering On"));
+      digitalWrite(PHONE_POWER_PIN, HIGH);
+      delay(200);
+      digitalWrite(PHONE_POWER_PIN, LOW);      
       logln(F("Waiting for power on"));
       int j = 0;
       while (!sendATcommand(AT, OK, 2000, 10) && j < 10) {
