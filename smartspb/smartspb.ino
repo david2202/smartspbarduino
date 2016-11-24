@@ -3,6 +3,8 @@
 #include <EEPROMex.h>
 #include <EEPROMVar.h>
 #include "HX711.h"
+#include <avr/sleep.h>
+#include <avr/power.h>
 
 // Pins
 #define HX711_DOUT  2
@@ -56,7 +58,7 @@
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
 #define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"articleCount\":%d,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
 
-#define SCALE_TOLERANCE (5)
+#define SCALE_TOLERANCE (4)
 
 HX711 scale(HX711_DOUT, HX711_CLK);   // parameter "gain" is ommited; the default value 128 is used by the library
 
@@ -101,6 +103,12 @@ unsigned long previousSendMillis;
 unsigned int serialBufferSize;
 
 void setup() {
+  // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
+  power_adc_disable();
+  power_spi_disable();
+  power_usart2_disable();
+  scale.power_down();
+  
   Serial.begin(115200);
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
@@ -145,6 +153,7 @@ void loop() {
     firstReading = false;
   }
   goToSleep();
+
   performReading();
   performSending();  
 }
@@ -161,11 +170,57 @@ long readScale() {
 }
 
 void goToSleep() {
+  /*** Setup the Watch Dog Timer ***/
+  
+  /* Clear the reset flag. */
+  MCUSR &= ~(1<<WDRF);
+  
+  /* In order to change WDE or the prescaler, we need to
+   * set WDCE (This will allow updates for 4 clock cycles).
+   */
+  WDTCSR |= (1<<WDCE) | (1<<WDE);
+
+  /* set new watchdog timeout prescaler value */
+  WDTCSR = 1<<WDP0 | 1<<WDP3; /* 8.0 seconds */
+  
+  /* Enable the WD interrupt (note no reset). */
+  WDTCSR |= _BV(WDIE);
+
   waitForSerialBufferToEmpty();
-  // LowPower.powerDown(configuration.sleepTime, ADC_OFF, BOD_OFF);
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);  
+  sleep_enable();
+  sleep_mode();
+  sleep_disable();
 
   // Timer stops while we are asleep, so we need to keep track of it
-  // cumulativeSleepMillis += 8000;  
+  cumulativeSleepMillis += 8000;  
+}
+
+void goToSleepOneSecond() {
+  /*** Setup the Watch Dog Timer ***/
+  
+  /* Clear the reset flag. */
+  MCUSR &= ~(1<<WDRF);
+  
+  /* In order to change WDE or the prescaler, we need to
+   * set WDCE (This will allow updates for 4 clock cycles).
+   */
+  WDTCSR |= (1<<WDCE) | (1<<WDE);
+
+  /* set new watchdog timeout prescaler value */
+  WDTCSR = 1<<WDP1 | 1<<WDP2; /* 1.0 seconds */
+  
+  /* Enable the WD interrupt (note no reset). */
+  WDTCSR |= _BV(WDIE);
+
+  waitForSerialBufferToEmpty();
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);  
+  sleep_enable();
+  sleep_mode();
+  sleep_disable();
+
+  // Timer stops while we are asleep, so we need to keep track of it
+  cumulativeSleepMillis += 1000;  
 }
 
 void performReading() {
@@ -484,11 +539,11 @@ boolean phonePowerOn() {
     delay(200);
     digitalWrite(PHONE_POWER_PIN, LOW);
     logln(F("Waiting for power on"));
-    delay(6000);
+    goToSleep();
     int i = 0;
     while (!sendATcommand(AT, OK, 2000, 10) && i < 10) {
       logln(F("Checking phone module power on status"));
-      delay(1000);
+      goToSleepOneSecond();
       i++;
     }
     if (i == 10) {
@@ -502,7 +557,7 @@ boolean phonePowerOn() {
       int j = 0;
       while (!sendATcommand(AT, OK, 2000, 10) && j < 10) {
         logln(F("Checking phone module power on status"));
-        delay(1000);
+        goToSleepOneSecond();
         j++;
       }
       if (j == 10) {
@@ -526,7 +581,7 @@ boolean phonePowerOn() {
     
     do {
       logln(F("Waiting for network"));
-      delay(1000);
+      goToSleepOneSecond();
       logln(AT_NETWORK_REGISTRATION);
       sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
       logln(response);
@@ -560,10 +615,11 @@ boolean phonePowerOff() {
 
 void phoneHardwarePowerOff() {
   digitalWrite(PHONE_POWER_PIN, HIGH);
-  delay(1000);
+  goToSleepOneSecond();
   digitalWrite(PHONE_POWER_PIN, LOW);
-  delay(5000);
+  goToSleep();
 }
+
 void phoneConfiguration() {
   logln(F("phoneConfiguration() - Start"));
   pushLogLevel();
@@ -757,3 +813,6 @@ char* getHost(char* host) {
   return host;
 }
 
+ISR(WDT_vect) {
+
+}

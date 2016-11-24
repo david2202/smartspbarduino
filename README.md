@@ -164,3 +164,11 @@ void loop() {
   erial.println("Waking up");
 }
 ~~~
+
+# Putting it all together
+
+Sleeping for 8 seconds @ 35mA
+Reading for 2 seconds @ 127mA
+Transmitting for 30 seconds @ 180mA
+
+
