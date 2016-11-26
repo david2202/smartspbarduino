@@ -1,3 +1,11 @@
+/*
+ * Useful references:
+ * 
+ * Power macros         http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
+ * hx711 datasheet      https://cdn.sparkfun.com/datasheets/Sensors/ForceFlex/hx711_english.pdf
+ * hx711 library        https://github.com/bogde/HX711
+ * 
+ */
 #define SERIAL_RX_BUFFER_SIZE 256
 
 #include <EEPROMex.h>
@@ -6,12 +14,15 @@
 #include <avr/sleep.h>
 #include <avr/power.h>
 
+#define DEBUG
+
 // Pins
 #define HX711_DOUT  2
 #define HX711_CLK  3
 #define HX711_AVERAGE_NUMBER 5
-#define HX711_READING_DELAY_MILLIS 25
-#define HX711_NUMBER_OF_READINGS 4
+#define HX711_READING_DELAY_MILLIS MILLISECONDS_32
+#define HX711_NUMBER_OF_READINGS 2
+#define LED_PIN (13)
 
 #define PHONE_POWER_PIN (8)
 #define PHONE_RESET_PIN (9)
@@ -31,7 +42,8 @@
 #define AT_HTTP ("AT+CHTTPACT=\"%s\",80")
 #define AT_HTTP_RESPONSE ("+CHTTPACT: REQUEST")
 #define AT_HTTP_RESPONSE_INCOMPLETE ("+CHTTPACT: DATA,")
-#define AT_HTTP_RESPONSE_COMPLETE ("+CHTTPACT: 0")
+// #define AT_HTTP_RESPONSE_COMPLETE ("+CHTTPACT: 0")
+#define AT_HTTP_RESPONSE_COMPLETE ("}")
 
 #define OK ("OK")
 #define ESC (0x1A)
@@ -59,6 +71,17 @@
 #define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"articleCount\":%d,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
 
 #define SCALE_TOLERANCE (4)
+
+#define MILLISECONDS_16 (0)
+#define MILLISECONDS_32 (1)
+#define MILLISECONDS_64 (2)
+#define MILLISECONDS_125 (3)
+#define MILLISECONDS_250 (4)
+#define MILLISECONDS_500 (5)
+#define MILLISECONDS_1000 (6)
+#define MILLISECONDS_2000 (7)
+#define MILLISECONDS_4000 (8)
+#define MILLISECONDS_8000 (9)
 
 HX711 scale(HX711_DOUT, HX711_CLK);   // parameter "gain" is ommited; the default value 128 is used by the library
 
@@ -103,13 +126,26 @@ unsigned long previousSendMillis;
 unsigned int serialBufferSize;
 
 void setup() {
+  pinMode(LED_PIN,OUTPUT);
+  digitalWrite(LED_PIN, LOW);
   // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
   power_adc_disable();
   power_spi_disable();
+  #ifndef DEBUG
+    // Not debugging so disable USART (serial) and USB
+    power_usart0_disable();
+  #endif
   power_usart2_disable();
+  power_timer1_disable();
+  power_timer2_disable();
+  power_timer3_disable();
+  power_timer4_disable();
+  power_timer5_disable();
   scale.power_down();
-  
-  Serial.begin(115200);
+
+  #ifdef DEBUG
+    Serial.begin(115200);
+  #endif
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
   pushLogLevel();
@@ -152,75 +188,92 @@ void loop() {
     // Let things settle
     firstReading = false;
   }
-  goToSleep();
-
+  goToSleep(MILLISECONDS_8000);
   performReading();
   performSending();  
 }
 
 long readScale() {
   scale.power_up();
+  // According to datasheet at 10Hz sampling scale HX711 isn't stable for at least 400ms
+  // after power on
+  goToSleep(MILLISECONDS_500);
   long readingTotal = 0;
   for (int i = 0; i < HX711_NUMBER_OF_READINGS; i++) {
     readingTotal +=  scale.read_average(HX711_AVERAGE_NUMBER);
-    delay(HX711_READING_DELAY_MILLIS);
+    goToSleep(HX711_READING_DELAY_MILLIS);
   }
   scale.power_down();
   return readingTotal / HX711_NUMBER_OF_READINGS;
 }
 
-void goToSleep() {
+void goToSleep(uint8_t wdt_period) {
+  waitForSerialBufferToEmpty();
+
   /*** Setup the Watch Dog Timer ***/
-  
   /* Clear the reset flag. */
   MCUSR &= ~(1<<WDRF);
   
-  /* In order to change WDE or the prescaler, we need to
-   * set WDCE (This will allow updates for 4 clock cycles).
-   */
-  WDTCSR |= (1<<WDCE) | (1<<WDE);
-
   /* set new watchdog timeout prescaler value */
-  WDTCSR = 1<<WDP0 | 1<<WDP3; /* 8.0 seconds */
-  
-  /* Enable the WD interrupt (note no reset). */
-  WDTCSR |= _BV(WDIE);
-
-  waitForSerialBufferToEmpty();
+  if (wdt_period == MILLISECONDS_16) {
+    /* In order to change WDE or the prescaler, we need to
+     * set WDCE (This will allow updates for 4 clock cycles).
+     */
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 0<<WDP0 | 0<<WDP1 | 0<<WDP2 | 0<<WDP3;
+    /* Enable the WD interrupt (note no reset). */
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 16;
+  } else if (wdt_period == MILLISECONDS_32) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 1<<WDP0 | 0<<WDP1 | 0<<WDP2 | 0<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 32;
+  } else if (wdt_period == MILLISECONDS_64) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 0<<WDP0 | 1<<WDP1 | 0<<WDP2 | 0<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 64;
+  } else if (wdt_period == MILLISECONDS_125) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 1<<WDP0 | 1<<WDP1 | 0<<WDP2 | 0<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 125;
+  } else if (wdt_period == MILLISECONDS_250) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 0<<WDP0 | 0<<WDP1 | 1<<WDP2 | 0<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 250;
+  } else if (wdt_period == MILLISECONDS_500) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 1<<WDP0 | 0<<WDP1 | 1<<WDP2 | 0<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 500;
+  } else if (wdt_period == MILLISECONDS_1000) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 0<<WDP0 | 1<<WDP1 | 1<<WDP2 | 0<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 1000;
+  } else if (wdt_period == MILLISECONDS_2000) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 1<<WDP0 | 1<<WDP1 | 1<<WDP2 | 0<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 2000;
+  } else if (wdt_period == MILLISECONDS_4000) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 0<<WDP0 | 0<<WDP1 | 0<<WDP2 | 1<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 4000;
+  } else if (wdt_period == MILLISECONDS_8000) {
+    WDTCSR |= (1<<WDCE) | (1<<WDE);
+    WDTCSR = 1<<WDP0 | 0<<WDP1 | 0<<WDP2 | 1<<WDP3;
+    WDTCSR |= _BV(WDIE);
+    cumulativeSleepMillis += 8000;
+  }
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);  
   sleep_enable();
   sleep_mode();
   sleep_disable();
-
-  // Timer stops while we are asleep, so we need to keep track of it
-  cumulativeSleepMillis += 8000;  
-}
-
-void goToSleepOneSecond() {
-  /*** Setup the Watch Dog Timer ***/
-  
-  /* Clear the reset flag. */
-  MCUSR &= ~(1<<WDRF);
-  
-  /* In order to change WDE or the prescaler, we need to
-   * set WDCE (This will allow updates for 4 clock cycles).
-   */
-  WDTCSR |= (1<<WDCE) | (1<<WDE);
-
-  /* set new watchdog timeout prescaler value */
-  WDTCSR = 1<<WDP1 | 1<<WDP2; /* 1.0 seconds */
-  
-  /* Enable the WD interrupt (note no reset). */
-  WDTCSR |= _BV(WDIE);
-
-  waitForSerialBufferToEmpty();
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);  
-  sleep_enable();
-  sleep_mode();
-  sleep_disable();
-
-  // Timer stops while we are asleep, so we need to keep track of it
-  cumulativeSleepMillis += 1000;  
 }
 
 void performReading() {
@@ -274,11 +327,17 @@ void takeReading() {
   }
   
   // Temperatures are dummy at the moment
-  
-  if (previousGrams[1] - grams > previousGrams[1] * 0.5 
-    && previousGrams[1] - previousGrams[0] > previousGrams[1] * 0.5
-    && previousGrams[1] - grams > SCALE_TOLERANCE
-    && previousGrams[1] - previousGrams[0] > SCALE_TOLERANCE) {
+
+  // If we've gone -ve by more than 50% of the weight on the scale
+  // OR more than twice the scale tolerance then zero the scale
+  if ((grams - previousGrams[1] < SCALE_TOLERANCE * - 1               // This reading is negative
+      && previousGrams[0] - previousGrams[1] < SCALE_TOLERANCE * - 1  // The previous reading was negative
+      && previousGrams[1] - grams > previousGrams[1] * 0.5            // And > 50% of weight on scale
+      && previousGrams[1] - previousGrams[0] > previousGrams[1] * 0.5
+      )
+    ||                                                                //
+    (previousGrams[0] - grams > SCALE_TOLERANCE * 2)                  // Or its a big -ve reading
+    ) {
     logln("Zeroing scale");
     scaleZeroReading = 0;
     previousGrams[0]=0;
@@ -287,6 +346,11 @@ void takeReading() {
     if (readings[readingsSize-1].totalGrams != 0) {
       Reading reading = {ms(), 0, 0, 0, 210};
       addReading(reading);
+    }
+    logln("Sleeping for 56 seconds while scale stabilises");
+    // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
+    for (int i = 0; i < 7; i++) {
+      goToSleep(MILLISECONDS_8000);
     }
   } else if (readingChanged(grams, newGrams) || firstReading) {
     log(F("Reading has changed - adding new reading grams="));
@@ -496,15 +560,18 @@ boolean sendRemote() {
       }
 
     }
-    Serial.println(response);
+    #ifdef DEBUG
+      Serial.println(response);
+    #endif
     if (!timeout) {
       String responseString = String(response);
       int startPos = responseString.indexOf("{");
       int endPos = responseString.indexOf("}") + 1;
 
       String payload = responseString.substring(startPos, endPos);
-
-      Serial.println(payload);
+      #ifdef DEBUG
+        Serial.println(payload);
+      #endif
     } else {
       logln("Timeout");
       send(ESC);
@@ -539,11 +606,11 @@ boolean phonePowerOn() {
     delay(200);
     digitalWrite(PHONE_POWER_PIN, LOW);
     logln(F("Waiting for power on"));
-    goToSleep();
+    goToSleep(MILLISECONDS_8000);
     int i = 0;
     while (!sendATcommand(AT, OK, 2000, 10) && i < 10) {
       logln(F("Checking phone module power on status"));
-      goToSleepOneSecond();
+      goToSleep(MILLISECONDS_1000);
       i++;
     }
     if (i == 10) {
@@ -557,7 +624,7 @@ boolean phonePowerOn() {
       int j = 0;
       while (!sendATcommand(AT, OK, 2000, 10) && j < 10) {
         logln(F("Checking phone module power on status"));
-        goToSleepOneSecond();
+        goToSleep(MILLISECONDS_1000);
         j++;
       }
       if (j == 10) {
@@ -581,7 +648,7 @@ boolean phonePowerOn() {
     
     do {
       logln(F("Waiting for network"));
-      goToSleepOneSecond();
+      goToSleep(MILLISECONDS_1000);
       logln(AT_NETWORK_REGISTRATION);
       sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
       logln(response);
@@ -615,9 +682,9 @@ boolean phonePowerOff() {
 
 void phoneHardwarePowerOff() {
   digitalWrite(PHONE_POWER_PIN, HIGH);
-  goToSleepOneSecond();
+  goToSleep(MILLISECONDS_1000);
   digitalWrite(PHONE_POWER_PIN, LOW);
-  goToSleep();
+  goToSleep(MILLISECONDS_8000);
 }
 
 void phoneConfiguration() {
@@ -645,7 +712,6 @@ void phoneConfiguration() {
     log(IMEI);
     logaddln(phoneConfig.imei);
   }
-  
   popLogLevel();
   logln(F("phoneConfiguration() - End"));
 }
@@ -739,50 +805,70 @@ void logConfiguration() {
 }
 
 void logln(char* message) {
-  indentLog();
-  Serial.println(message);
+  #ifdef DEBUG
+    indentLog();
+    Serial.println(message);
+  #endif
 }
 
 void logln(String message) {
-  indentLog();
-  Serial.println(message);
+  #ifdef DEBUG
+    indentLog();
+    Serial.println(message);
+  #endif
 }
 
 void logln(long message) {
-  indentLog();
-  Serial.println(message);
+  #ifdef DEBUG
+    indentLog();
+    Serial.println(message);
+  #endif
 }
 
 void logln(const __FlashStringHelper* message) {
-  indentLog();
-  Serial.println(message);
+  #ifdef DEBUG
+    indentLog();
+    Serial.println(message);
+  #endif
 }
 
 void log(char* message) {
-  indentLog();
-  Serial.print(message);
+  #ifdef DEBUG
+    indentLog();
+    Serial.print(message);
+  #endif
 }
 
 void log(const __FlashStringHelper* message) {
-  indentLog();
-  Serial.print(message);
+  #ifdef DEBUG
+    indentLog();
+    Serial.print(message);
+  #endif
 }
 
 void log(long message) {
-  indentLog();
-  Serial.print(message);
+  #ifdef DEBUG
+    indentLog();
+    Serial.print(message);
+  #endif
 }
 
 void logaddln(char* message) {
-  Serial.println(message);
+  #ifdef DEBUG
+    Serial.println(message);
+  #endif
 }
 
 void logaddln(String message) {
-  Serial.println(message);
+  #ifdef DEBUG
+    Serial.println(message);
+  #endif
 }
 
 void logaddln(long message) {
-  Serial.println(message);
+  #ifdef DEBUG
+    Serial.println(message);
+  #endif
 }
 
 void pushLogLevel() {
