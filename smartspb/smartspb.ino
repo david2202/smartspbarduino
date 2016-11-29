@@ -351,10 +351,12 @@ void takeReading() {
       
       Reading reading = {ms(), 0, 0, 0, getTemp() * 10.0};
       addReading(reading);
+      sendRemote();
+      previousSendMillis = ms();
     }
-    logln("Sleeping for 56 seconds while scale stabilises");
+    logln("Sleeping for 28 seconds while scale stabilises");
     // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 4; i++) {
       goToSleep(MILLISECONDS_8000);
       // Need to keep the power pack awake, so use some power
       readScale();
@@ -384,6 +386,8 @@ void takeReading() {
     
     Reading reading = {ms(), newGrams, totalGrams, articleCount, temp};
     addReading(reading);
+    sendRemote();
+    previousSendMillis = ms();
     previousGrams[0]=grams;
     previousGrams[1]=grams;
     previousGrams[2]=grams;
@@ -638,12 +642,12 @@ boolean phonePowerOn() {
       digitalWrite(PHONE_POWER_PIN, LOW);      
       logln(F("Waiting for power on"));
       int j = 0;
-      while (!sendATcommand(AT, OK, 2000, 10) && j < 10) {
+      while (!sendATcommand(AT, OK, 2000, 10) && j < 5) {
         logln(F("Checking phone module power on status"));
         goToSleep(MILLISECONDS_1000);
         j++;
       }
-      if (j == 10) {
+      if (j == 5) {
         poweredOn = false;
         logln(F("Phone is not responsive - hardware power off and abandon"));
         phoneHardwarePowerOff();
