@@ -14,8 +14,6 @@
 #include <avr/sleep.h>
 #include <avr/power.h>
 
-#define DEBUG
-
 // Pins
 #define HX711_DOUT  2
 #define HX711_CLK  3
@@ -72,7 +70,7 @@
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
 #define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"articleCount\":%d,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
 
-#define SCALE_TOLERANCE (4)
+#define SCALE_TOLERANCE (5)
 
 #define MILLISECONDS_16 (0)
 #define MILLISECONDS_32 (1)
@@ -133,24 +131,7 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
   pinMode(LM35_POWER, OUTPUT);
   digitalWrite(LM35_POWER, LOW);
-  // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
-  power_adc_disable();
-  power_spi_disable();
-  #ifndef DEBUG
-    // Not debugging so disable USART (serial) and USB
-    power_usart0_disable();
-  #endif
-  power_usart2_disable();
-  power_timer1_disable();
-  power_timer2_disable();
-  power_timer3_disable();
-  power_timer4_disable();
-  power_timer5_disable();
-  scale.power_down();
-
-  #ifdef DEBUG
-    Serial.begin(115200);
-  #endif
+  Serial.begin(115200);
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
   pushLogLevel();
@@ -201,11 +182,11 @@ long readScale() {
   scale.power_up();
   // According to datasheet at 10Hz sampling scale HX711 isn't stable for at least 400ms
   // after power on
-  goToSleep(MILLISECONDS_500);
+  delay(400);
   long readingTotal = 0;
   for (int i = 0; i < HX711_NUMBER_OF_READINGS; i++) {
     readingTotal +=  scale.read_average(HX711_AVERAGE_NUMBER);
-    goToSleep(HX711_READING_DELAY_MILLIS);
+    delay(HX711_READING_DELAY_MILLIS);
   }
   scale.power_down();
   return readingTotal / HX711_NUMBER_OF_READINGS;
@@ -217,7 +198,7 @@ void goToSleep(uint8_t wdt_period) {
   /*** Setup the Watch Dog Timer ***/
   /* Clear the reset flag. */
   MCUSR &= ~(1<<WDRF);
-  
+
   /* set new watchdog timeout prescaler value */
   if (wdt_period == MILLISECONDS_16) {
     /* In order to change WDE or the prescaler, we need to
@@ -274,7 +255,7 @@ void goToSleep(uint8_t wdt_period) {
     WDTCSR |= _BV(WDIE);
     cumulativeSleepMillis += 8000;
   }
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);  
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_enable();
   sleep_mode();
   sleep_disable();
@@ -495,8 +476,6 @@ boolean sendRemote() {
     sprintf(buffer, HTTP_API_KEY, configuration.apiKey);
     logln(buffer);
     sendLn(buffer);
-    waitForSerial1BufferToEmpty();
-    // Serial.println("Sending the data");     // I don't know why, but this makes it work. Some weirdness with serial buffers?
 
     sprintf(buffer, "");
     logln(buffer);
@@ -528,7 +507,6 @@ boolean sendRemote() {
         String hexLength = String(strlen(reading), HEX);
         logln(hexLength);
         sendln(hexLength);
-        waitForSerial1BufferToEmpty();
         
         logln(reading);
         sendLn(reading);
@@ -576,18 +554,15 @@ boolean sendRemote() {
       }
 
     }
-    #ifdef DEBUG
-      Serial.println(response);
-    #endif
+    Serial.println(response);
     if (!timeout) {
       String responseString = String(response);
       int startPos = responseString.indexOf("{");
       int endPos = responseString.indexOf("}") + 1;
 
       String payload = responseString.substring(startPos, endPos);
-      #ifdef DEBUG
-        Serial.println(payload);
-      #endif
+
+      Serial.println(payload);
     } else {
       logln("Timeout");
       send(ESC);
@@ -622,11 +597,11 @@ boolean phonePowerOn() {
     delay(200);
     digitalWrite(PHONE_POWER_PIN, LOW);
     logln(F("Waiting for power on"));
-    goToSleep(MILLISECONDS_8000);
+    delay(6000);
     int i = 0;
     while (!sendATcommand(AT, OK, 2000, 10) && i < 10) {
       logln(F("Checking phone module power on status"));
-      goToSleep(MILLISECONDS_1000);
+      delay(1000);
       i++;
     }
     if (i == 10) {
@@ -640,7 +615,7 @@ boolean phonePowerOn() {
       int j = 0;
       while (!sendATcommand(AT, OK, 2000, 10) && j < 10) {
         logln(F("Checking phone module power on status"));
-        goToSleep(MILLISECONDS_1000);
+        delay(1000);
         j++;
       }
       if (j == 10) {
@@ -664,7 +639,7 @@ boolean phonePowerOn() {
     
     do {
       logln(F("Waiting for network"));
-      goToSleep(MILLISECONDS_1000);
+      delay(1000);
       logln(AT_NETWORK_REGISTRATION);
       sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
       logln(response);
@@ -698,9 +673,9 @@ boolean phonePowerOff() {
 
 void phoneHardwarePowerOff() {
   digitalWrite(PHONE_POWER_PIN, HIGH);
-  goToSleep(MILLISECONDS_1000);
+  delay(1000);
   digitalWrite(PHONE_POWER_PIN, LOW);
-  goToSleep(MILLISECONDS_8000);
+  delay(5000);
 }
 
 void phoneConfiguration() {
@@ -843,88 +818,50 @@ void logConfiguration() {
 }
 
 void logln(char* message) {
-  #ifdef DEBUG
     indentLog();
     Serial.println(message);
-  #endif
 }
 
 void logln(String message) {
-  #ifdef DEBUG
     indentLog();
     Serial.println(message);
-  #endif
 }
 
 void logln(long message) {
-  #ifdef DEBUG
     indentLog();
     Serial.println(message);
-  #endif
 }
 
 void logln(const __FlashStringHelper* message) {
-  #ifdef DEBUG
     indentLog();
     Serial.println(message);
-  #endif
 }
 
 void log(char* message) {
-  #ifdef DEBUG
     indentLog();
     Serial.print(message);
-  #endif
 }
 
 void log(const __FlashStringHelper* message) {
-  #ifdef DEBUG
     indentLog();
     Serial.print(message);
-  #endif
 }
 
 void log(long message) {
-  #ifdef DEBUG
     indentLog();
     Serial.print(message);
-  #endif
-}
-
-void logadd(char* message) {
-  #ifdef DEBUG
-    Serial.print(message);
-  #endif
-}
-
-void logadd(String message) {
-  #ifdef DEBUG
-    Serial.print(message);
-  #endif
-}
-
-void logadd(long message) {
-  #ifdef DEBUG
-    Serial.print(message);
-  #endif
 }
 
 void logaddln(char* message) {
-  #ifdef DEBUG
     Serial.println(message);
-  #endif
 }
 
 void logaddln(String message) {
-  #ifdef DEBUG
     Serial.println(message);
-  #endif
 }
 
 void logaddln(long message) {
-  #ifdef DEBUG
     Serial.println(message);
-  #endif
 }
 
 void pushLogLevel() {
@@ -936,8 +873,6 @@ void popLogLevel() {
 }
 
 void indentLog() {
-  //Serial.print(ms());
-  //Serial.print(" ");
   for (int i = 0; i < indent; i++) {
     Serial.print(" ");
   }
@@ -949,11 +884,6 @@ void waitForSerialBufferToEmpty() {
   }
 }
 
-void waitForSerial1BufferToEmpty() {
-  while (Serial1.availableForWrite() < serialBufferSize) {
-  }
-}
-
 char* getHost(char* host) {
   String s = String(configuration.remoteUrlBase);
   int start = s.indexOf("//") + 2;
@@ -962,6 +892,3 @@ char* getHost(char* host) {
   return host;
 }
 
-ISR(WDT_vect) {
-
-}
