@@ -179,16 +179,16 @@ void loop() {
 }
 
 long readScale() {
-  scale.power_up();
+  //scale.power_up();
   // According to datasheet at 10Hz sampling scale HX711 isn't stable for at least 400ms
   // after power on
-  delay(400);
+  //delay(400);
   long readingTotal = 0;
   for (int i = 0; i < HX711_NUMBER_OF_READINGS; i++) {
     readingTotal +=  scale.read_average(HX711_AVERAGE_NUMBER);
     delay(HX711_READING_DELAY_MILLIS);
   }
-  scale.power_down();
+  //scale.power_down();
   return readingTotal / HX711_NUMBER_OF_READINGS;
 }
 
@@ -332,6 +332,8 @@ void takeReading() {
       
       Reading reading = {ms(), 0, 0, 0, getTemp() * 10.0};
       addReading(reading);
+      sendRemote();
+      previousSendMillis = ms();
     }
     logln("Sleeping for 56 seconds while scale stabilises");
     // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
@@ -368,6 +370,8 @@ void takeReading() {
     previousGrams[0]=grams;
     previousGrams[1]=grams;
     previousGrams[2]=grams;
+    sendRemote();
+    previousSendMillis = ms();
   } else {
     // Roll the history
     previousGrams[2] = previousGrams[1];
@@ -852,6 +856,18 @@ void log(long message) {
     Serial.print(message);
 }
 
+void logadd(char* message) {
+    Serial.print(message);
+}
+
+void logadd(String message) {
+    Serial.print(message);
+}
+
+void logadd(long message) {
+    Serial.print(message);
+}
+
 void logaddln(char* message) {
     Serial.println(message);
 }
@@ -892,3 +908,6 @@ char* getHost(char* host) {
   return host;
 }
 
+ISR(WDT_vect) {
+  // Dummy watchdog timer handler to prevent reset
+}
