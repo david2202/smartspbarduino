@@ -19,9 +19,11 @@
 // Pins
 #define HX711_DOUT  2
 #define HX711_CLK  3
+#define LM35_POWER 4
+#define LM35_ANALOG 0
 #define HX711_AVERAGE_NUMBER 5
 #define HX711_READING_DELAY_MILLIS MILLISECONDS_32
-#define HX711_NUMBER_OF_READINGS 2
+#define HX711_NUMBER_OF_READINGS 4
 #define LED_PIN (13)
 
 #define PHONE_POWER_PIN (8)
@@ -126,8 +128,11 @@ unsigned long previousSendMillis;
 unsigned int serialBufferSize;
 
 void setup() {
+  analogReference(INTERNAL1V1);    // Use 1.1V for greater resolution
   pinMode(LED_PIN,OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  pinMode(LM35_POWER, OUTPUT);
+  digitalWrite(LM35_POWER, LOW);
   // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
   power_adc_disable();
   power_spi_disable();
@@ -161,7 +166,6 @@ void setup() {
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
 */
-
   EEPROM.readBlock(0, configuration);
 
   logConfiguration();
@@ -344,21 +348,23 @@ void takeReading() {
     previousGrams[1]=0;
     previousGrams[2]=0;
     if (readings[readingsSize-1].totalGrams != 0) {
-      Reading reading = {ms(), 0, 0, 0, 210};
+      
+      Reading reading = {ms(), 0, 0, 0, getTemp() * 10.0};
       addReading(reading);
     }
     logln("Sleeping for 56 seconds while scale stabilises");
     // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
     for (int i = 0; i < 7; i++) {
       goToSleep(MILLISECONDS_8000);
+      // Need to keep the power pack awake, so use some power
+      readScale();
     }
   } else if (readingChanged(grams, newGrams) || firstReading) {
-    log(F("Reading has changed - adding new reading grams="));
-    log(newGrams);
     // The new reading is the previous reading plus the new reading.
     // This elminates slow drift in the scale as we only count changes.
     long totalGrams;
     int articleCount;
+    int temp = getTemp() * 10.0;
     if (readingsSize == 0) {
       totalGrams = newGrams;
       articleCount = 0;
@@ -366,12 +372,17 @@ void takeReading() {
       totalGrams = readings[readingsSize - 1].totalGrams + newGrams;
       articleCount = readings[readingsSize - 1].articleCount + 1;
     }
-    log(F(",totalGrams="));
-    log(totalGrams);
-    log(F(",articleCount="));
-    logaddln(articleCount);
+    log(F("Reading has changed - adding new reading grams="));
+    logadd(newGrams);
+    logadd(F(",totalGrams="));
+    logadd(totalGrams);
+    logadd(F(",articleCount="));
+    logadd(articleCount);
+    logadd(F(",temperature="));
+    logaddln(temp);
     
-    Reading reading = {ms(), newGrams, totalGrams, articleCount, 210};
+    
+    Reading reading = {ms(), newGrams, totalGrams, articleCount, temp};
     addReading(reading);
     previousGrams[0]=grams;
     previousGrams[1]=grams;
@@ -484,6 +495,8 @@ boolean sendRemote() {
     sprintf(buffer, HTTP_API_KEY, configuration.apiKey);
     logln(buffer);
     sendLn(buffer);
+    waitForSerial1BufferToEmpty();
+    // Serial.println("Sending the data");     // I don't know why, but this makes it work. Some weirdness with serial buffers?
 
     sprintf(buffer, "");
     logln(buffer);
@@ -500,12 +513,14 @@ boolean sendRemote() {
       if (i > 0 || readingsSize == 1) {
         char reading[70];
         long timeMillis = readings[i].timeMillis;
+        int temp = readings[i].temperatureTenthsDegree;
         if (readingsSize == 1) {
           // If there is only one reading, then it is just a resend, so use the
-          // current time for the reading
+          // current time and temperature for the reading
           timeMillis = ms();
+          temp = getTemp() * 10.0;
         }
-        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, readings[i].articleCount, 21, 2, (ms() - timeMillis) / 1000);
+        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, readings[i].articleCount, temp / 10, temp % 10, (ms() - timeMillis) / 1000);
     
         if (i < readingsSize - 1) {
           strcat(reading, ",");
@@ -513,6 +528,7 @@ boolean sendRemote() {
         String hexLength = String(strlen(reading), HEX);
         logln(hexLength);
         sendln(hexLength);
+        waitForSerial1BufferToEmpty();
         
         logln(reading);
         sendLn(reading);
@@ -528,7 +544,7 @@ boolean sendRemote() {
     sendLn("0");
     logln("");
     sendln("");
-    
+
     buffer[0] = ESC;
     buffer[1] = END_OF_STRING;
     send(buffer);
@@ -782,6 +798,28 @@ void clearSerialBuffer() {
   }  
 }
 
+float getTemp() {
+  logln(F("getTemp()- Start"));
+  pushLogLevel();
+  power_adc_enable();
+  digitalWrite(LM35_POWER, HIGH);
+  goToSleep(MILLISECONDS_16);
+  float celsius = 0;
+  for (int i = 0; i < 5; i++) {
+  int sensorValue = analogRead(LM35_ANALOG);
+    celsius += sensorValue / (10 / 1.0742);    // 10 mV = 1.0742 degrees
+  }
+  celsius /= 5;
+  // float celsius = sensorValue * (5.0 / 1023.0) * 100;
+  digitalWrite(LM35_POWER, LOW);
+  power_adc_disable();
+  log("Temperature: ");
+  logaddln(celsius);
+  popLogLevel();
+  logln(F("getTemp()- End"));
+  return celsius;
+}
+
 void logConfiguration() {
   logln(F("logConfiguration()- Start"));
   pushLogLevel();
@@ -853,6 +891,24 @@ void log(long message) {
   #endif
 }
 
+void logadd(char* message) {
+  #ifdef DEBUG
+    Serial.print(message);
+  #endif
+}
+
+void logadd(String message) {
+  #ifdef DEBUG
+    Serial.print(message);
+  #endif
+}
+
+void logadd(long message) {
+  #ifdef DEBUG
+    Serial.print(message);
+  #endif
+}
+
 void logaddln(char* message) {
   #ifdef DEBUG
     Serial.println(message);
@@ -880,14 +936,21 @@ void popLogLevel() {
 }
 
 void indentLog() {
+  //Serial.print(ms());
+  //Serial.print(" ");
   for (int i = 0; i < indent; i++) {
     Serial.print(" ");
-  }  
+  }
 }
 
 void waitForSerialBufferToEmpty() {
   while (Serial.availableForWrite() < serialBufferSize) {
     delay(20);
+  }
+}
+
+void waitForSerial1BufferToEmpty() {
+  while (Serial1.availableForWrite() < serialBufferSize) {
   }
 }
 
