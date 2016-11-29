@@ -315,8 +315,8 @@ void takeReading() {
 
   // If we've gone -ve by more than 50% of the weight on the scale
   // OR more than twice the scale tolerance then zero the scale
-  if ((grams - previousGrams[1] < SCALE_TOLERANCE * - 1               // This reading is negative
-      && previousGrams[0] - previousGrams[1] < SCALE_TOLERANCE * - 1  // The previous reading was negative
+  if ((grams - previousGrams[1] < (SCALE_TOLERANCE - 1) * - 1               // This reading is negative
+      && previousGrams[0] - previousGrams[1] < (SCALE_TOLERANCE - 1) * - 1  // The previous reading was negative
       && previousGrams[1] - grams > previousGrams[1] * 0.5            // And > 50% of weight on scale
       && previousGrams[1] - previousGrams[0] > previousGrams[1] * 0.5
       )
@@ -335,9 +335,9 @@ void takeReading() {
       sendRemote();
       previousSendMillis = ms();
     }
-    logln("Sleeping for 56 seconds while scale stabilises");
+    logln("Sleeping for 28 seconds while scale stabilises");
     // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 4; i++) {
       goToSleep(MILLISECONDS_8000);
       // Need to keep the power pack awake, so use some power
       readScale();
@@ -603,12 +603,12 @@ boolean phonePowerOn() {
     logln(F("Waiting for power on"));
     delay(6000);
     int i = 0;
-    while (!sendATcommand(AT, OK, 2000, 10) && i < 10) {
+    while (!sendATcommand(AT, OK, 2000, 10) && i < 5) {
       logln(F("Checking phone module power on status"));
       delay(1000);
       i++;
     }
-    if (i == 10) {
+    if (i == 5) {
       logln(F("Phone is not responsive - hardware power off"));
       phoneHardwarePowerOff();
       logln(F("Powering On"));
