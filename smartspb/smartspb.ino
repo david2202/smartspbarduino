@@ -14,6 +14,8 @@
 #include <avr/sleep.h>
 #include <avr/power.h>
 
+#define DEBUG
+
 // Pins
 #define HX711_DOUT  2
 #define HX711_CLK  3
@@ -131,22 +133,35 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
   pinMode(LM35_POWER, OUTPUT);
   digitalWrite(LM35_POWER, LOW);
+  // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
+  power_adc_disable();
+  power_spi_disable();
+  #ifndef DEBUG
+    // Not debugging so disable USART (serial) and USB
+    power_usart0_disable();
+  #endif
+  power_usart2_disable();
+  power_timer1_disable();
+  power_timer2_disable();
+  power_timer3_disable();
+  power_timer4_disable();
+  power_timer5_disable();
   Serial.begin(115200);
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
   pushLogLevel();
 
-/*
   //strcpy(configuration.remoteUrlBase, "http://122.107.211.41");
   //strcpy(configuration.remoteUrlBase, "http://httpbin.org");
+  /*
   strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
   strcpy(configuration.apn, "telstra.internet");
   configuration.readingMillis = 8000;
-  configuration.remoteSendMillis = 300000;
+  configuration.remoteSendMillis = 3600000l;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
-*/
+  */
   EEPROM.readBlock(0, configuration);
 
   logConfiguration();
@@ -335,13 +350,11 @@ void takeReading() {
       sendRemote();
       previousSendMillis = ms();
     }
-    logln("Sleeping for 28 seconds while scale stabilises");
+    logln("Sleeping for 8 seconds while scale stabilises");
     // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
-    for (int i = 0; i < 4; i++) {
-      goToSleep(MILLISECONDS_8000);
-      // Need to keep the power pack awake, so use some power
-      readScale();
-    }
+    goToSleep(MILLISECONDS_8000);
+    // Need to keep the power pack awake, so use some power
+    readScale();
   } else if (readingChanged(grams, newGrams) || firstReading) {
     // The new reading is the previous reading plus the new reading.
     // This elminates slow drift in the scale as we only count changes.
