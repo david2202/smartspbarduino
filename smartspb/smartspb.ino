@@ -21,9 +21,9 @@
 #define HX711_CLK  3
 #define LM35_POWER 4
 #define LM35_ANALOG 0
-#define HX711_AVERAGE_NUMBER 5
-#define HX711_READING_DELAY_MILLIS MILLISECONDS_32
-#define HX711_NUMBER_OF_READINGS 4
+#define HX711_AVERAGE_NUMBER 3
+#define HX711_READING_DELAY_MILLIS 20
+#define HX711_NUMBER_OF_READINGS 5
 #define LED_PIN (13)
 
 #define PHONE_POWER_PIN (8)
@@ -133,6 +133,7 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
   pinMode(LM35_POWER, OUTPUT);
   digitalWrite(LM35_POWER, LOW);
+
   // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
   power_adc_disable();
   power_spi_disable();
@@ -157,8 +158,8 @@ void setup() {
   strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
   strcpy(configuration.apn, "telstra.internet");
-  configuration.readingMillis = 8000;
-  configuration.remoteSendMillis = 3600000l;
+  configuration.readingMillis = 16000;
+  configuration.remoteSendMillis = 14400000l;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
   */
@@ -174,7 +175,7 @@ void setup() {
 
   // TODO Send a message that we are online
 
-  phonePowerOff();
+  // Don't power off as we're going to send a reading straight away 
 
   previousSendMillis = ms();
   previousScaleMillis = ms();
@@ -328,17 +329,15 @@ void takeReading() {
   
   // Temperatures are dummy at the moment
 
-  // If we've gone -ve by more than 50% of the weight on the scale
-  // OR more than twice the scale tolerance then zero the scale
-  if ((grams - previousGrams[1] < (SCALE_TOLERANCE - 1) * - 1               // This reading is negative
-      && previousGrams[0] - previousGrams[1] < (SCALE_TOLERANCE - 1) * - 1  // The previous reading was negative
-      && previousGrams[1] - grams > previousGrams[1] * 0.5            // And > 50% of weight on scale
-      && previousGrams[1] - previousGrams[0] > previousGrams[1] * 0.5
+  // If we've got two negative readings in a row
+  // OR one negative reading more than twice the scale tolerance then zero the scale
+  if ((grams - previousGrams[1] < SCALE_TOLERANCE * - 1               // This reading is negative
+      && previousGrams[0] - previousGrams[1] < SCALE_TOLERANCE * - 1  // The previous reading was negative
       )
     ||                                                                //
     (previousGrams[0] - grams > SCALE_TOLERANCE * 2)                  // Or its a big -ve reading
     ) {
-    logln("Zeroing scale");
+    logln("Zeroing scale on next reading");
     scaleZeroReading = 0;
     previousGrams[0]=0;
     previousGrams[1]=0;
@@ -580,14 +579,14 @@ boolean sendRemote() {
       String payload = responseString.substring(startPos, endPos);
 
       Serial.println(payload);
+      readings[0] = readings[readingsSize - 1];
+      readingsSize = 1;
     } else {
       logln("Timeout");
       send(ESC);
     }
-    phonePowerOff();
+    phoneHardwarePowerOff();
     previousSendMillis = ms();
-    readings[0] = readings[readingsSize - 1];
-    readingsSize = 1;
     returnValue = true;
   } else {
     returnValue = false;
@@ -614,11 +613,11 @@ boolean phonePowerOn() {
     delay(200);
     digitalWrite(PHONE_POWER_PIN, LOW);
     logln(F("Waiting for power on"));
-    delay(6000);
+    goToSleep(MILLISECONDS_4000);
     int i = 0;
     while (!sendATcommand(AT, OK, 2000, 10) && i < 5) {
       logln(F("Checking phone module power on status"));
-      delay(1000);
+      goToSleep(MILLISECONDS_1000);
       i++;
     }
     if (i == 5) {
@@ -632,7 +631,7 @@ boolean phonePowerOn() {
       int j = 0;
       while (!sendATcommand(AT, OK, 2000, 10) && j < 10) {
         logln(F("Checking phone module power on status"));
-        delay(1000);
+        goToSleep(MILLISECONDS_1000);
         j++;
       }
       if (j == 10) {
@@ -649,37 +648,39 @@ boolean phonePowerOn() {
 
   if (poweredOn) {
     logln(F("Phone module is powered on"));
-  
-    char response[30];
     logln(F("Turning echo off"));
+    char response[30];
     sendATCommandResponse(AT_ECHO_OFF, OK, 200, 30, response);
-    
+    int i = 0;
     do {
       logln(F("Waiting for network"));
-      delay(1000);
+      goToSleep(MILLISECONDS_1000);
       logln(AT_NETWORK_REGISTRATION);
       sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
       logln(response);
-    } while (strstr(response, AT_NETWORK_REGISTRATION_RESPONSE) == NULL);
-  
-    char buffer[30];
-    sprintf(buffer, AT_DEFINE_SOCKET_PDP, configuration.apn);
-    logln(F("Defining socket PDP context"));
-    logln(buffer);
-    sendATCommandResponse(buffer, OK, 2000, 30, response);
-    logln(response);
-    
-    logln(F("Setting PDP auth mode to none"));
-    sendATCommandResponse(AT_DEFINE_PDP_AUTH, OK, 2000, 30, response);
-    logln(response);
+    } while (strstr(response, AT_NETWORK_REGISTRATION_RESPONSE) == NULL && i++ < 20);
+    if (i == 20) {
+      logln(F("No network available"));
+      poweredOn = false;
+    } else {
+      char buffer[30];
+      sprintf(buffer, AT_DEFINE_SOCKET_PDP, configuration.apn);
+      logln(F("Defining socket PDP context"));
+      logln(buffer);
+      sendATCommandResponse(buffer, OK, 2000, 30, response);
+      logln(response);
+      
+      logln(F("Setting PDP auth mode to none"));
+      sendATCommandResponse(AT_DEFINE_PDP_AUTH, OK, 2000, 30, response);
+      logln(response);
+    }
   }
-  
   popLogLevel();
   logln(F("phonePowerOn() - End"));
   return poweredOn;
 }
 
-boolean phonePowerOff() {
+boolean phoneSoftPowerOff() {
   logln(F("phonePowerOff() - Start"));
   pushLogLevel();
   boolean result = sendATcommand(AT_POWER_OFF, OK, 2000, 20);
@@ -689,19 +690,24 @@ boolean phonePowerOff() {
 }
 
 void phoneHardwarePowerOff() {
+  logln(F("phoneHardwarePowerOff() - Start"));
+  pushLogLevel();
   digitalWrite(PHONE_POWER_PIN, HIGH);
   delay(1000);
   digitalWrite(PHONE_POWER_PIN, LOW);
-  delay(5000);
+  goToSleep(MILLISECONDS_4000);
+  popLogLevel();
+  logln(F("phonePowerOff() - End"));  
 }
 
 void phoneConfiguration() {
   logln(F("phoneConfiguration() - Start"));
   pushLogLevel();
 
-  logln(F("Getting phone configuration"));
   unsigned int bufferSize = 250;
   char response[bufferSize];
+
+  logln(F("Getting phone configuration"));
   sendATCommandResponse(AT_IDENTIFY, OK, 200, bufferSize, response);
   if (strlen(response) == 0) {
     logln(F("Timed out"));
@@ -729,7 +735,6 @@ boolean extractConfigItem(char* response, char* parameter, char* answer) {
   int parameterPos = config.indexOf(parameter);
   int startPos = parameterPos + strlen(parameter);
   int newLinePos = config.indexOf(CRLF, startPos + 1);
-  logln(config.substring(startPos, newLinePos - 1));
   config.substring(startPos, newLinePos - 1).toCharArray(answer, 20);
   return true;
 }
@@ -795,7 +800,7 @@ float getTemp() {
   pushLogLevel();
   power_adc_enable();
   digitalWrite(LM35_POWER, HIGH);
-  goToSleep(MILLISECONDS_16);
+  delay(HX711_READING_DELAY_MILLIS);
   float celsius = 0;
   for (int i = 0; i < 5; i++) {
   int sensorValue = analogRead(LM35_ANALOG);
@@ -835,62 +840,88 @@ void logConfiguration() {
 }
 
 void logln(char* message) {
+  #ifdef DEBUG
     indentLog();
     Serial.println(message);
+  #endif
 }
 
 void logln(String message) {
+  #ifdef DEBUG
     indentLog();
     Serial.println(message);
+  #endif
 }
 
 void logln(long message) {
+  #ifdef DEBUG
     indentLog();
     Serial.println(message);
+  #endif
 }
 
 void logln(const __FlashStringHelper* message) {
+  #ifdef DEBUG
     indentLog();
     Serial.println(message);
+  #endif
 }
 
 void log(char* message) {
+  #ifdef DEBUG
     indentLog();
     Serial.print(message);
+  #endif
 }
 
 void log(const __FlashStringHelper* message) {
+  #ifdef DEBUG
     indentLog();
     Serial.print(message);
+  #endif
 }
 
 void log(long message) {
+  #ifdef DEBUG
     indentLog();
     Serial.print(message);
+  #endif
 }
 
 void logadd(char* message) {
+  #ifdef DEBUG
     Serial.print(message);
+  #endif
 }
 
 void logadd(String message) {
+  #ifdef DEBUG
     Serial.print(message);
+  #endif
 }
 
 void logadd(long message) {
+  #ifdef DEBUG
     Serial.print(message);
+  #endif
 }
 
 void logaddln(char* message) {
+  #ifdef DEBUG
     Serial.println(message);
+  #endif
 }
 
 void logaddln(String message) {
+  #ifdef DEBUG
     Serial.println(message);
+  #endif
 }
 
 void logaddln(long message) {
+  #ifdef DEBUG
     Serial.println(message);
+  #endif
 }
 
 void pushLogLevel() {
