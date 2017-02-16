@@ -19,9 +19,11 @@
 // Pins
 #define HX711_DOUT  2
 #define HX711_CLK  3
-#define HX711_AVERAGE_NUMBER 5
-#define HX711_READING_DELAY_MILLIS MILLISECONDS_32
-#define HX711_NUMBER_OF_READINGS 2
+#define LM35_POWER 4
+#define LM35_ANALOG 0
+#define HX711_AVERAGE_NUMBER 3
+#define HX711_READING_DELAY_MILLIS 20
+#define HX711_NUMBER_OF_READINGS 5
 #define LED_PIN (13)
 
 #define PHONE_POWER_PIN (8)
@@ -70,7 +72,7 @@
 #define HTTP_POST_READING ("POST /rest/remote/spb/%s/reading HTTP/1.1")
 #define JSON_READING ("{\"grams\":%ld,\"totalGrams\":%ld,\"articleCount\":%d,\"degreesC\":%d.%d,\"secondsAgo\":%ld}")
 
-#define SCALE_TOLERANCE (4)
+#define SCALE_TOLERANCE (5)
 
 #define MILLISECONDS_16 (0)
 #define MILLISECONDS_32 (1)
@@ -126,8 +128,12 @@ unsigned long previousSendMillis;
 unsigned int serialBufferSize;
 
 void setup() {
+  analogReference(INTERNAL1V1);    // Use 1.1V for greater resolution
   pinMode(LED_PIN,OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  pinMode(LM35_POWER, OUTPUT);
+  digitalWrite(LM35_POWER, LOW);
+
   // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
   power_adc_disable();
   power_spi_disable();
@@ -141,27 +147,22 @@ void setup() {
   power_timer3_disable();
   power_timer4_disable();
   power_timer5_disable();
-  scale.power_down();
-
-  #ifdef DEBUG
-    Serial.begin(115200);
-  #endif
+  Serial.begin(115200);
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
   pushLogLevel();
 
-/*
   //strcpy(configuration.remoteUrlBase, "http://122.107.211.41");
   //strcpy(configuration.remoteUrlBase, "http://httpbin.org");
+  /*
   strcpy(configuration.remoteUrlBase, "http://smartspb-infra.ap-southeast-2.elasticbeanstalk.com");
   strcpy(configuration.apiKey, "16fa2ee7-6614-4f62-bc16-a3c6fa189675");
   strcpy(configuration.apn, "telstra.internet");
-  configuration.readingMillis = 8000;
-  configuration.remoteSendMillis = 300000;
+  configuration.readingMillis = 16000;
+  configuration.remoteSendMillis = 14400000l;
   configuration.version = 1;
   EEPROM.writeBlock(0, configuration);
-*/
-
+  */
   EEPROM.readBlock(0, configuration);
 
   logConfiguration();
@@ -174,7 +175,7 @@ void setup() {
 
   // TODO Send a message that we are online
 
-  phonePowerOff();
+  // Don't power off as we're going to send a reading straight away 
 
   previousSendMillis = ms();
   previousScaleMillis = ms();
@@ -194,16 +195,16 @@ void loop() {
 }
 
 long readScale() {
-  scale.power_up();
+  //scale.power_up();
   // According to datasheet at 10Hz sampling scale HX711 isn't stable for at least 400ms
   // after power on
-  goToSleep(MILLISECONDS_500);
+  //delay(400);
   long readingTotal = 0;
   for (int i = 0; i < HX711_NUMBER_OF_READINGS; i++) {
     readingTotal +=  scale.read_average(HX711_AVERAGE_NUMBER);
-    goToSleep(HX711_READING_DELAY_MILLIS);
+    delay(HX711_READING_DELAY_MILLIS);
   }
-  scale.power_down();
+  //scale.power_down();
   return readingTotal / HX711_NUMBER_OF_READINGS;
 }
 
@@ -213,7 +214,7 @@ void goToSleep(uint8_t wdt_period) {
   /*** Setup the Watch Dog Timer ***/
   /* Clear the reset flag. */
   MCUSR &= ~(1<<WDRF);
-  
+
   /* set new watchdog timeout prescaler value */
   if (wdt_period == MILLISECONDS_16) {
     /* In order to change WDE or the prescaler, we need to
@@ -270,7 +271,7 @@ void goToSleep(uint8_t wdt_period) {
     WDTCSR |= _BV(WDIE);
     cumulativeSleepMillis += 8000;
   }
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);  
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_enable();
   sleep_mode();
   sleep_disable();
@@ -328,37 +329,37 @@ void takeReading() {
   
   // Temperatures are dummy at the moment
 
-  // If we've gone -ve by more than 50% of the weight on the scale
-  // OR more than twice the scale tolerance then zero the scale
+  // If we've got two negative readings in a row
+  // OR one negative reading more than twice the scale tolerance then zero the scale
   if ((grams - previousGrams[1] < SCALE_TOLERANCE * - 1               // This reading is negative
       && previousGrams[0] - previousGrams[1] < SCALE_TOLERANCE * - 1  // The previous reading was negative
-      && previousGrams[1] - grams > previousGrams[1] * 0.5            // And > 50% of weight on scale
-      && previousGrams[1] - previousGrams[0] > previousGrams[1] * 0.5
       )
     ||                                                                //
     (previousGrams[0] - grams > SCALE_TOLERANCE * 2)                  // Or its a big -ve reading
     ) {
-    logln("Zeroing scale");
+    logln("Zeroing scale on next reading");
     scaleZeroReading = 0;
     previousGrams[0]=0;
     previousGrams[1]=0;
     previousGrams[2]=0;
     if (readings[readingsSize-1].totalGrams != 0) {
-      Reading reading = {ms(), 0, 0, 0, 210};
+      
+      Reading reading = {ms(), 0, 0, 0, getTemp() * 10.0};
       addReading(reading);
+      sendRemote();
+      previousSendMillis = ms();
     }
-    logln("Sleeping for 56 seconds while scale stabilises");
+    logln("Sleeping for 8 seconds while scale stabilises");
     // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
-    for (int i = 0; i < 7; i++) {
-      goToSleep(MILLISECONDS_8000);
-    }
+    goToSleep(MILLISECONDS_8000);
+    // Need to keep the power pack awake, so use some power
+    readScale();
   } else if (readingChanged(grams, newGrams) || firstReading) {
-    log(F("Reading has changed - adding new reading grams="));
-    log(newGrams);
     // The new reading is the previous reading plus the new reading.
     // This elminates slow drift in the scale as we only count changes.
     long totalGrams;
     int articleCount;
+    int temp = getTemp() * 10.0;
     if (readingsSize == 0) {
       totalGrams = newGrams;
       articleCount = 0;
@@ -366,16 +367,23 @@ void takeReading() {
       totalGrams = readings[readingsSize - 1].totalGrams + newGrams;
       articleCount = readings[readingsSize - 1].articleCount + 1;
     }
-    log(F(",totalGrams="));
-    log(totalGrams);
-    log(F(",articleCount="));
-    logaddln(articleCount);
+    log(F("Reading has changed - adding new reading grams="));
+    logadd(newGrams);
+    logadd(F(",totalGrams="));
+    logadd(totalGrams);
+    logadd(F(",articleCount="));
+    logadd(articleCount);
+    logadd(F(",temperature="));
+    logaddln(temp);
     
-    Reading reading = {ms(), newGrams, totalGrams, articleCount, 210};
+    
+    Reading reading = {ms(), newGrams, totalGrams, articleCount, temp};
     addReading(reading);
     previousGrams[0]=grams;
     previousGrams[1]=grams;
     previousGrams[2]=grams;
+    sendRemote();
+    previousSendMillis = ms();
   } else {
     // Roll the history
     previousGrams[2] = previousGrams[1];
@@ -500,12 +508,14 @@ boolean sendRemote() {
       if (i > 0 || readingsSize == 1) {
         char reading[70];
         long timeMillis = readings[i].timeMillis;
+        int temp = readings[i].temperatureTenthsDegree;
         if (readingsSize == 1) {
           // If there is only one reading, then it is just a resend, so use the
-          // current time for the reading
+          // current time and temperature for the reading
           timeMillis = ms();
+          temp = getTemp() * 10.0;
         }
-        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, readings[i].articleCount, 21, 2, (ms() - timeMillis) / 1000);
+        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, readings[i].articleCount, temp / 10, temp % 10, (ms() - timeMillis) / 1000);
     
         if (i < readingsSize - 1) {
           strcat(reading, ",");
@@ -528,7 +538,7 @@ boolean sendRemote() {
     sendLn("0");
     logln("");
     sendln("");
-    
+
     buffer[0] = ESC;
     buffer[1] = END_OF_STRING;
     send(buffer);
@@ -560,26 +570,23 @@ boolean sendRemote() {
       }
 
     }
-    #ifdef DEBUG
-      Serial.println(response);
-    #endif
+    Serial.println(response);
     if (!timeout) {
       String responseString = String(response);
       int startPos = responseString.indexOf("{");
       int endPos = responseString.indexOf("}") + 1;
 
       String payload = responseString.substring(startPos, endPos);
-      #ifdef DEBUG
-        Serial.println(payload);
-      #endif
+
+      Serial.println(payload);
+      readings[0] = readings[readingsSize - 1];
+      readingsSize = 1;
     } else {
       logln("Timeout");
       send(ESC);
     }
-    phonePowerOff();
+    phoneHardwarePowerOff();
     previousSendMillis = ms();
-    readings[0] = readings[readingsSize - 1];
-    readingsSize = 1;
     returnValue = true;
   } else {
     returnValue = false;
@@ -606,14 +613,14 @@ boolean phonePowerOn() {
     delay(200);
     digitalWrite(PHONE_POWER_PIN, LOW);
     logln(F("Waiting for power on"));
-    goToSleep(MILLISECONDS_8000);
+    goToSleep(MILLISECONDS_4000);
     int i = 0;
-    while (!sendATcommand(AT, OK, 2000, 10) && i < 10) {
+    while (!sendATcommand(AT, OK, 2000, 10) && i < 5) {
       logln(F("Checking phone module power on status"));
       goToSleep(MILLISECONDS_1000);
       i++;
     }
-    if (i == 10) {
+    if (i == 5) {
       logln(F("Phone is not responsive - hardware power off"));
       phoneHardwarePowerOff();
       logln(F("Powering On"));
@@ -641,37 +648,39 @@ boolean phonePowerOn() {
 
   if (poweredOn) {
     logln(F("Phone module is powered on"));
-  
-    char response[30];
     logln(F("Turning echo off"));
+    char response[30];
     sendATCommandResponse(AT_ECHO_OFF, OK, 200, 30, response);
-    
+    int i = 0;
     do {
       logln(F("Waiting for network"));
       goToSleep(MILLISECONDS_1000);
       logln(AT_NETWORK_REGISTRATION);
       sendATCommandResponse(AT_NETWORK_REGISTRATION, OK, 200, 30, response);
       logln(response);
-    } while (strstr(response, AT_NETWORK_REGISTRATION_RESPONSE) == NULL);
-  
-    char buffer[30];
-    sprintf(buffer, AT_DEFINE_SOCKET_PDP, configuration.apn);
-    logln(F("Defining socket PDP context"));
-    logln(buffer);
-    sendATCommandResponse(buffer, OK, 2000, 30, response);
-    logln(response);
-    
-    logln(F("Setting PDP auth mode to none"));
-    sendATCommandResponse(AT_DEFINE_PDP_AUTH, OK, 2000, 30, response);
-    logln(response);
+    } while (strstr(response, AT_NETWORK_REGISTRATION_RESPONSE) == NULL && i++ < 20);
+    if (i == 20) {
+      logln(F("No network available"));
+      poweredOn = false;
+    } else {
+      char buffer[30];
+      sprintf(buffer, AT_DEFINE_SOCKET_PDP, configuration.apn);
+      logln(F("Defining socket PDP context"));
+      logln(buffer);
+      sendATCommandResponse(buffer, OK, 2000, 30, response);
+      logln(response);
+      
+      logln(F("Setting PDP auth mode to none"));
+      sendATCommandResponse(AT_DEFINE_PDP_AUTH, OK, 2000, 30, response);
+      logln(response);
+    }
   }
-  
   popLogLevel();
   logln(F("phonePowerOn() - End"));
   return poweredOn;
 }
 
-boolean phonePowerOff() {
+boolean phoneSoftPowerOff() {
   logln(F("phonePowerOff() - Start"));
   pushLogLevel();
   boolean result = sendATcommand(AT_POWER_OFF, OK, 2000, 20);
@@ -681,19 +690,24 @@ boolean phonePowerOff() {
 }
 
 void phoneHardwarePowerOff() {
+  logln(F("phoneHardwarePowerOff() - Start"));
+  pushLogLevel();
   digitalWrite(PHONE_POWER_PIN, HIGH);
-  goToSleep(MILLISECONDS_1000);
+  delay(1000);
   digitalWrite(PHONE_POWER_PIN, LOW);
-  goToSleep(MILLISECONDS_8000);
+  goToSleep(MILLISECONDS_4000);
+  popLogLevel();
+  logln(F("phonePowerOff() - End"));  
 }
 
 void phoneConfiguration() {
   logln(F("phoneConfiguration() - Start"));
   pushLogLevel();
 
-  logln(F("Getting phone configuration"));
   unsigned int bufferSize = 250;
   char response[bufferSize];
+
+  logln(F("Getting phone configuration"));
   sendATCommandResponse(AT_IDENTIFY, OK, 200, bufferSize, response);
   if (strlen(response) == 0) {
     logln(F("Timed out"));
@@ -721,7 +735,6 @@ boolean extractConfigItem(char* response, char* parameter, char* answer) {
   int parameterPos = config.indexOf(parameter);
   int startPos = parameterPos + strlen(parameter);
   int newLinePos = config.indexOf(CRLF, startPos + 1);
-  logln(config.substring(startPos, newLinePos - 1));
   config.substring(startPos, newLinePos - 1).toCharArray(answer, 20);
   return true;
 }
@@ -780,6 +793,28 @@ void clearSerialBuffer() {
   while(Serial1.available() > 0) {
     Serial1.read();
   }  
+}
+
+float getTemp() {
+  logln(F("getTemp()- Start"));
+  pushLogLevel();
+  power_adc_enable();
+  digitalWrite(LM35_POWER, HIGH);
+  delay(HX711_READING_DELAY_MILLIS);
+  float celsius = 0;
+  for (int i = 0; i < 5; i++) {
+  int sensorValue = analogRead(LM35_ANALOG);
+    celsius += sensorValue / (10 / 1.0742);    // 10 mV = 1.0742 degrees
+  }
+  celsius /= 5;
+  // float celsius = sensorValue * (5.0 / 1023.0) * 100;
+  digitalWrite(LM35_POWER, LOW);
+  power_adc_disable();
+  log("Temperature: ");
+  logaddln(celsius);
+  popLogLevel();
+  logln(F("getTemp()- End"));
+  return celsius;
 }
 
 void logConfiguration() {
@@ -853,6 +888,24 @@ void log(long message) {
   #endif
 }
 
+void logadd(char* message) {
+  #ifdef DEBUG
+    Serial.print(message);
+  #endif
+}
+
+void logadd(String message) {
+  #ifdef DEBUG
+    Serial.print(message);
+  #endif
+}
+
+void logadd(long message) {
+  #ifdef DEBUG
+    Serial.print(message);
+  #endif
+}
+
 void logaddln(char* message) {
   #ifdef DEBUG
     Serial.println(message);
@@ -882,7 +935,7 @@ void popLogLevel() {
 void indentLog() {
   for (int i = 0; i < indent; i++) {
     Serial.print(" ");
-  }  
+  }
 }
 
 void waitForSerialBufferToEmpty() {
@@ -900,5 +953,5 @@ char* getHost(char* host) {
 }
 
 ISR(WDT_vect) {
-
+  // Dummy watchdog timer handler to prevent reset
 }
