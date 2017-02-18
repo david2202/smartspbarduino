@@ -20,14 +20,16 @@
 #define HX711_DOUT  2
 #define HX711_CLK  3
 #define LM35_POWER 4
+#define PHONE_POWER_MOSFET 5
+#define PHONE_POWER_PIN (8)
+#define PHONE_RESET_PIN (9)
+
 #define LM35_ANALOG 0
 #define HX711_AVERAGE_NUMBER 3
 #define HX711_READING_DELAY_MILLIS 20
 #define HX711_NUMBER_OF_READINGS 5
 #define LED_PIN (13)
 
-#define PHONE_POWER_PIN (8)
-#define PHONE_RESET_PIN (9)
 
 #define PHONE_BAUD (115200)
 
@@ -129,11 +131,15 @@ unsigned int serialBufferSize;
 
 void setup() {
   analogReference(INTERNAL1V1);    // Use 1.1V for greater resolution
+
+  initialisePinsForPowerSaving();
+  
   pinMode(LED_PIN,OUTPUT);
   digitalWrite(LED_PIN, LOW);
   pinMode(LM35_POWER, OUTPUT);
   digitalWrite(LM35_POWER, LOW);
-
+  pinMode(PHONE_POWER_MOSFET, OUTPUT);
+  
   // See http://www.nongnu.org/avr-libc/user-manual/group__avr__power.html
   power_adc_disable();
   power_spi_disable();
@@ -147,6 +153,8 @@ void setup() {
   power_timer3_disable();
   power_timer4_disable();
   power_timer5_disable();
+  power_twi_disable();
+
   Serial.begin(115200);
   serialBufferSize = Serial.availableForWrite();
   logln(F("setup()- Start"));
@@ -184,6 +192,48 @@ void setup() {
   logln(F("setup()- End"));
 }
 
+void initialisePinsForPowerSaving() {
+  // Analog 0 is for temperature
+  pinMode(A1, OUTPUT);
+  pinMode(A2, OUTPUT);
+  pinMode(A3, OUTPUT);
+  pinMode(A4, OUTPUT);
+  pinMode(A5, OUTPUT);
+  pinMode(A6, OUTPUT);
+  pinMode(A7, OUTPUT);
+  pinMode(A8, OUTPUT);
+  pinMode(A9, OUTPUT);
+  pinMode(A10, OUTPUT);
+  pinMode(A11, OUTPUT);
+  pinMode(A12, OUTPUT);
+  pinMode(A13, OUTPUT);
+  pinMode(A14, OUTPUT);
+  pinMode(A15, OUTPUT);
+
+  digitalWrite(A0, LOW);
+  digitalWrite(A1, LOW);
+  digitalWrite(A2, LOW);
+  digitalWrite(A3, LOW);
+  digitalWrite(A4, LOW);
+  digitalWrite(A5, LOW);
+  digitalWrite(A6, LOW);
+  digitalWrite(A7, LOW);
+  digitalWrite(A8, LOW);
+  digitalWrite(A9, LOW);
+  digitalWrite(A10, LOW);
+  digitalWrite(A11, LOW);
+  digitalWrite(A12, LOW);
+  digitalWrite(A13, LOW);
+  digitalWrite(A14, LOW);
+  digitalWrite(A15, LOW);
+
+  // Note: can't start at pin 2 as this breaks the hx711 which has already initialised itself
+  for (int i = 4; i <= 53; i++) {
+    pinMode(i, OUTPUT);
+    digitalWrite(i, LOW);
+  }
+}
+
 void loop() {
   if (firstReading) {
     // Let things settle
@@ -195,16 +245,16 @@ void loop() {
 }
 
 long readScale() {
-  //scale.power_up();
+  scale.power_up();
   // According to datasheet at 10Hz sampling scale HX711 isn't stable for at least 400ms
   // after power on
-  //delay(400);
+  goToSleep(MILLISECONDS_500);
   long readingTotal = 0;
   for (int i = 0; i < HX711_NUMBER_OF_READINGS; i++) {
     readingTotal +=  scale.read_average(HX711_AVERAGE_NUMBER);
     delay(HX711_READING_DELAY_MILLIS);
   }
-  //scale.power_down();
+  scale.power_down();
   return readingTotal / HX711_NUMBER_OF_READINGS;
 }
 
@@ -603,6 +653,15 @@ unsigned long ms() {
 boolean phonePowerOn() {
   logln(F("phonePowerOn() - Start"));
   pushLogLevel();
+
+  if (digitalRead(PHONE_POWER_MOSFET) == LOW) {
+    logln(F("Delivering power via MOSFET"));
+    digitalWrite(PHONE_POWER_MOSFET, HIGH);
+    goToSleep(MILLISECONDS_250);
+  } else {
+    logln(F("MOSFET already activated"));
+  }
+
   logln(F("Checking phone module power on status"));
   boolean poweredOn = false;
   if (sendATcommand(AT, OK, 200, 10)) {
@@ -692,10 +751,7 @@ boolean phoneSoftPowerOff() {
 void phoneHardwarePowerOff() {
   logln(F("phoneHardwarePowerOff() - Start"));
   pushLogLevel();
-  digitalWrite(PHONE_POWER_PIN, HIGH);
-  delay(1000);
-  digitalWrite(PHONE_POWER_PIN, LOW);
-  goToSleep(MILLISECONDS_4000);
+  digitalWrite(PHONE_POWER_MOSFET, LOW);
   popLogLevel();
   logln(F("phonePowerOff() - End"));  
 }
@@ -803,11 +859,10 @@ float getTemp() {
   delay(HX711_READING_DELAY_MILLIS);
   float celsius = 0;
   for (int i = 0; i < 5; i++) {
-  int sensorValue = analogRead(LM35_ANALOG);
-    celsius += sensorValue / (10 / 1.0742);    // 10 mV = 1.0742 degrees
+    int sensorValue = analogRead(LM35_ANALOG);
+    celsius += sensorValue / 9.31;
   }
   celsius /= 5;
-  // float celsius = sensorValue * (5.0 / 1023.0) * 100;
   digitalWrite(LM35_POWER, LOW);
   power_adc_disable();
   log("Temperature: ");
