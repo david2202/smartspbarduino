@@ -14,7 +14,7 @@
 #include <avr/sleep.h>
 #include <avr/power.h>
 
-//#define DEBUG
+#define DEBUG
 
 // Pins
 #define HX711_DOUT  2
@@ -26,12 +26,12 @@
 
 #define LM35_ANALOG 0
 
-#define SCALE_MINIMUM_READINGS (5)
+#define SCALE_MINIMUM_READINGS (7)
 #define SCALE_MAXIMUM_READINGS (50)
-#define SCALE_STABLE_TOLERANCE_GRAMS (2.0)
-#define SCALE_TOLERANCE_GRAMS (4.0)
+#define SCALE_STABLE_TOLERANCE_GRAMS (1.5)
+#define SCALE_TOLERANCE_GRAMS (6.0)
 
-#define LM35_POWER_DELAY_MILLIS (20)
+#define LM35_POWER_DELAY_MILLIS (200)
 
 #define PHONE_BAUD (115200)
 
@@ -115,8 +115,7 @@ struct Reading {
 
 boolean firstReading = true;
 long scaleGramsFactor = 231243l;
-float previousStableGrams = 0;
-float previousGrams = 0;
+float previousGrams = 999999;
 
 struct PhoneConfig phoneConfig;
 struct Configuration configuration;
@@ -258,6 +257,8 @@ float readScale() {
     gramsBuffer[i % SCALE_MINIMUM_READINGS] = grams;
     i++;
   }
+  log(F("Number of readings = "));
+  logln(i);
   scale.power_down();
   return scaleAverage(gramsBuffer);
 }
@@ -267,14 +268,21 @@ float scaleRawToGrams(long rawReading) {
 }
 
 boolean scaleStable(float grams[]) {
+  float minGrams = 999999;
+  float maxGrams = -999999;
   for (int i = 0; i < SCALE_MINIMUM_READINGS; i++) {
-    for (int j = 0; j < SCALE_MINIMUM_READINGS; j++) {
-      if (abs(grams[i] - grams[j]) > SCALE_STABLE_TOLERANCE_GRAMS) {
-        return false;
-      }
+    if (grams[i] < minGrams) {
+      minGrams = grams[i];
+    }
+    if (grams[i] > maxGrams) {
+      maxGrams = grams[i];
     }
   }
-  return true;
+  if (maxGrams - minGrams < SCALE_STABLE_TOLERANCE_GRAMS) {
+    return true;
+  } else {
+    return false;
+  }
 }
 
 float scaleAverage(float grams[]) {
@@ -362,6 +370,12 @@ void performReading() {
 
 void performSending() {
   if (isRemoteSendTime()) {
+    // Update the temperature and time on the latest reading
+    if (readingsSize == 1) {
+      int temp = getTemp() * 10.0;
+      readings[0].temperatureTenthsDegree = temp;
+      readings[0].timeMillis = ms();
+    }
     sendRemote();
     previousSendMillis = ms();
   }
@@ -381,61 +395,52 @@ void takeReading() {
 
   float scaleGrams = readScale();
   
-  log(F("grams = "));
-  logaddln(scaleGrams);
   log(F("previousGrams = "));
   logaddln(previousGrams);
-  log(F("previousStableGrams = "));
-  logaddln(previousStableGrams);
+  log(F("grams = "));
+  logaddln(scaleGrams);
 
-  if (abs(scaleGrams - previousGrams) < SCALE_TOLERANCE_GRAMS) {
-    logln(F("Stable reading detected"));
-    // We have two stable readings in a row
-    // Now check the average of the last two stable readings against the last stable reading
-    float newGrams = ((scaleGrams + previousGrams) / 2) - previousStableGrams;
-    if (newGrams > SCALE_TOLERANCE_GRAMS) {
-      if (previousStableGrams == 0) {
-        // It's the first reading so send zero
-        newGrams = 0;
-      }
-      // We have detected a letter
-      long totalGrams;
-      int articleCount;
+  // Now check the average of the last two stable readings against the last stable reading
+  float newGrams = scaleGrams - previousGrams;
+  log(F("newGrams = "));
+  logaddln(newGrams);
+  if (newGrams > SCALE_TOLERANCE_GRAMS) {
+    // We have detected a letter
+    long totalGrams;
+    int articleCount;
+    int temp = getTemp() * 10.0;
+    if (readingsSize == 0) {
+      totalGrams = newGrams;
+      articleCount = 0;
+    } else {
+      totalGrams = readings[readingsSize - 1].totalGrams + newGrams;
+      articleCount = readings[readingsSize - 1].articleCount + 1;
+    }
+    log(F("Reading has changed - adding new reading grams="));
+    logadd(newGrams);
+    logadd(F(",totalGrams="));
+    logadd(totalGrams);
+    logadd(F(",articleCount="));
+    logadd(articleCount);
+    logadd(F(",temperature="));
+    logaddln((long) temp);
+    
+    Reading reading = {ms(), newGrams, totalGrams, articleCount, temp};
+    addReading(reading);
+    sendRemote();
+    previousSendMillis = ms();
+  } else if (newGrams * -1 > SCALE_TOLERANCE_GRAMS) {
+    // We've gone negative by more than the weight of a letter
+    if (readings[readingsSize-1].totalGrams != 0) {
       int temp = getTemp() * 10.0;
-      if (readingsSize == 0) {
-        totalGrams = newGrams;
-        articleCount = 0;
-      } else {
-        totalGrams = readings[readingsSize - 1].totalGrams + newGrams;
-        articleCount = readings[readingsSize - 1].articleCount + 1;
-      }
-      log(F("Reading has changed - adding new reading grams="));
-      logadd(newGrams);
-      logadd(F(",totalGrams="));
-      logadd(totalGrams);
-      logadd(F(",articleCount="));
-      logadd(articleCount);
-      logadd(F(",temperature="));
-      logaddln((long) temp);
-      
-      
-      Reading reading = {ms(), newGrams, totalGrams, articleCount, temp};
+      Reading reading = {ms(), 0, 0, 0, temp};
       addReading(reading);
       sendRemote();
       previousSendMillis = ms();
-    } else if (newGrams * -1 > SCALE_TOLERANCE_GRAMS) {
-      // We've gone negative by more than the weight of a letter
-      if (readings[readingsSize-1].totalGrams != 0) {
-        Reading reading = {ms(), 0, 0, 0, getTemp() * 10.0};
-        addReading(reading);
-        sendRemote();
-        previousSendMillis = ms();
-        logln("Sleeping for 8 seconds while scale stabilises");
-        // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
-        goToSleep(MILLISECONDS_8000);
-      }      
-    }
-    previousStableGrams = (scaleGrams + previousGrams) / 2;
+      logln("Sleeping for 8 seconds while scale stabilises");
+      // Sleep for 1 minute to let the scale stabilise and the driver to finish collecting
+      goToSleep(MILLISECONDS_8000);
+    }      
   }
   previousGrams = scaleGrams;
   previousScaleMillis = ms();
@@ -506,13 +511,8 @@ boolean sendRemote() {
         char reading[70];
         long timeMillis = readings[i].timeMillis;
         int temp = readings[i].temperatureTenthsDegree;
-        if (readingsSize == 1) {
-          // If there is only one reading, then it is just a resend, so use the
-          // current time and temperature for the reading
-          timeMillis = ms();
-          temp = getTemp() * 10.0;
-        }
-        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, readings[i].articleCount, temp / 10, temp % 10, (ms() - timeMillis) / 1000);
+        
+        sprintf(reading, JSON_READING, readings[i].grams, readings[i].totalGrams, readings[i].articleCount, readings[i].temperatureTenthsDegree / 10, temp % 10, (ms() - timeMillis) / 1000);
     
         if (i < readingsSize - 1) {
           strcat(reading, ",");
@@ -605,9 +605,8 @@ boolean phonePowerOn() {
   pinMode(PHONE_RESET_PIN, OUTPUT);
   if (digitalRead(PHONE_POWER_MOSFET) == LOW) {
     logln(F("Delivering power via MOSFET"));
-    delay(50);
     digitalWrite(PHONE_POWER_MOSFET, HIGH);
-    goToSleep(MILLISECONDS_250);
+    logln(F("MOSFET powered"));
   } else {
     logln(F("MOSFET already activated"));
   }
