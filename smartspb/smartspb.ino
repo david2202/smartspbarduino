@@ -600,17 +600,13 @@ unsigned long ms() {
 boolean phonePowerOn() {
   logln(F("phonePowerOn() - Start"));
   pushLogLevel();
-
   pinMode(PHONE_POWER_PIN, OUTPUT);
   pinMode(PHONE_RESET_PIN, OUTPUT);
-  if (digitalRead(PHONE_POWER_MOSFET) == LOW) {
-    logln(F("Delivering power via MOSFET"));
-    digitalWrite(PHONE_POWER_MOSFET, HIGH);
-    logln(F("MOSFET powered"));
-  } else {
-    logln(F("MOSFET already activated"));
-  }
-
+  delay(200);
+  logln(F("Delivering power via MOSFET"));
+  digitalWrite(PHONE_POWER_MOSFET, HIGH);
+  logln(F("MOSFET powered"));
+  
   logln(F("Checking phone module power on status"));
   boolean poweredOn = false;
   if (sendATcommand(AT, OK, 200, 10)) {
