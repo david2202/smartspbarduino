@@ -700,7 +700,7 @@ void phoneHardwarePowerOff() {
   pushLogLevel();
   digitalWrite(PHONE_POWER_MOSFET, LOW);
   popLogLevel();
-  logln(F("phonePowerOff() - End"));  
+  logln(F("phoneHardwarePowerOff() - End"));  
 }
 
 void phoneConfiguration() {
