@@ -84,3 +84,91 @@ Content-Length: 0
 
 {"grams": 505, "degreesC": 21.2}
 ~~~
+
+# Power Consumption (Mega 2560)
+
+Base power consumption in hard on loop = 34.5mA
+
+~~~
+#include <avr/sleep.h>
+
+void setup() {
+  Serial.begin(115200);
+}
+
+void loop() {
+}
+~~~
+
+Turn off ADC = 34mA
+
+void setup() {
+  ADCSRA = 0;
+  Serial.begin(115200);
+}
+
+void loop() {
+}
+
+power_all_disable() = 28.5mA
+
+~~~
+void setup() {
+  ADCSRA = 0;
+  power_all_disable();
+
+  Serial.begin(115200);
+}
+
+void loop() {
+}
+~~~
+
+Sleep mode SLEEP_MODE_PWR_DOWN = 7.5mA
+
+~~~
+#include <avr/sleep.h>
+#include <avr/power.h>
+
+void setup() {
+  Serial.begin(115200);
+
+  // disable ADC
+  ADCSRA = 0;
+
+  power_all_disable();
+  
+    /*** Setup the WDT ***/
+  
+  /* Clear the reset flag. */
+  MCUSR &= ~(1<<WDRF);
+  
+  /* In order to change WDE or the prescaler, we need to
+   * set WDCE (This will allow updates for 4 clock cycles).
+   */
+  WDTCSR |= (1<<WDCE) | (1<<WDE);
+
+  /* set new watchdog timeout prescaler value */
+  WDTCSR = 1<<WDP0 | 1<<WDP3; /* 8.0 seconds */
+  
+  /* Enable the WD interrupt (note no reset). */
+  WDTCSR |= _BV(WDIE);
+}
+
+void loop() {
+  Serial.println("Going to sleep");
+  // put your main code here, to run repeatedly:
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);  
+  sleep_enable();
+  sleep_cpu ();
+  erial.println("Waking up");
+}
+~~~
+
+# Putting it all together
+
+Sleeping for 8 seconds @ 35mA
+Reading for 2 seconds @ 127mA
+Transmitting for 30 seconds @ 180mA
+
+
